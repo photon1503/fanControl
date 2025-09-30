@@ -6,15 +6,15 @@ void tachISR();
 
 #define TACH_PIN 4
 #define PWM_PIN 16 // Change to Pin 9 or 10 (Timer 1)
-#define PWM_FREQ        30      // 30Hz for 3-pin fan
-#define PWM_RESOLUTION  12      // 12-bit = 4096 steps
+
+#define PWM_RESOLUTION  16      // 16-bit = 65536 steps
 #define PWM_CHANNEL     0       // Use channel 0
 
 
-
+unsigned int pwm_freq = 25;
 unsigned long lastRpmCalcTime = 0;
 unsigned long lastPrintTime = 0;
-unsigned long lastPulseTime = 0;
+unsigned long lastPulseTime = 0;  
 unsigned int currentRPM = 0;
 byte currentDutyCycle = 0;
 volatile bool sampleWindowOpen = false;
@@ -23,13 +23,8 @@ volatile unsigned long pulseCount = 0;
 volatile unsigned long lastAcceptedPulseAtMs = 0;
 unsigned long totalSampleTime = 0;
 unsigned long lastSampleResetTime = 0;
-// Analog tach variables
-unsigned long analogPulseCount = 0;
-int lastAnalogValue = 0;
-bool lastPulseState = false;
-int lowThreshold = 0;
-int highThreshold = 0;
-bool thresholdsCalculated = false;
+
+
 
 const byte pwmPoints[] = {0,10, 20, 30, 50, 70, 100};
 const int rpmPoints[]  = {0,225, 450, 900, 1800, 2000, 2200};
@@ -40,7 +35,7 @@ void setup(void) {
   Serial.println("Fan Controller - Correct Timing");
   
   // Setup PWM with high resolution
-  ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+  ledcSetup(PWM_CHANNEL, pwm_freq, PWM_RESOLUTION);
   ledcAttachPin(PWM_PIN, PWM_CHANNEL);
 
   pinMode(TACH_PIN, INPUT);
@@ -51,68 +46,81 @@ void setup(void) {
 }
 
 void tachISR() {
- 
-  // Conservative 15ms debounce
   pulseCount++;
  
 }
 
 
-void setFanSpeed(byte dutyCycle) {
-  currentDutyCycle = dutyCycle;
-  uint32_t pwmValue = (dutyCycle / 100.0) * 4095;
+void setFanSpeed(float dutyCycle) {
+   currentDutyCycle = dutyCycle;
+  
+  // Calculate PWM value based on resolution
+  uint32_t pwmValue;
+  
+  if (PWM_RESOLUTION == 8) {
+    pwmValue = (dutyCycle / 100.0) * 255;
+  } 
+  else if (PWM_RESOLUTION == 12) {
+    pwmValue = (dutyCycle / 100.0) * 4095;  // 12-bit: 0-4095
+  }
+  else if (PWM_RESOLUTION == 16) {
+    pwmValue = (dutyCycle / 100.0) * 65535; // 16-bit: 0-65535
+  }
+  
+  ledcWrite(PWM_CHANNEL, pwmValue);
+  
+}
+
+void setFanSpeedDither(float dutyCycle) {
+  // Add small random variation to break up regular pulses
+  float jitter = (random(-10, 10) / 100.0); // ±0.1% jitter
+  float effectiveDuty = dutyCycle + jitter;
+  
+  uint32_t pwmValue = (effectiveDuty / 100.0) * 4095;
   ledcWrite(PWM_CHANNEL, pwmValue);
 }
 
 float readRPM() {
-  unsigned long startTime = millis();
-  pulseCount = 0;
-  
-  // Count pulses for 1 second
-  while (millis() - startTime < 1000) {
-    delay(10);
-  }
-  
-  unsigned long pulses = pulseCount;
-  return (pulses * 60.0) / 2.0; // 2 pulses per revolution
-}
-
-unsigned int calculateRPM() {
   unsigned long currentTime = millis();
   unsigned long elapsedTime = currentTime - lastRpmCalcTime;
   
+  // Only calculate RPM every 1 second
   if (elapsedTime < 1000) {
     return currentRPM;
   }
   
-  // Reset thresholds for new measurement (optional)
-  //thresholdsCalculated = false;
+  // Get pulses and reset counter atomically
+  noInterrupts();
+  unsigned long pulses = pulseCount;
+  pulseCount = 0;
+  interrupts();
   
-  // Count pulses
-  unsigned long pulseCount = 0;
-  unsigned long sampleStart = millis();
-  
-
-  
-  if (pulseCount > 0) {
-    currentRPM = (pulseCount * 60) / 2;
+  if (pulses > 0) {
+    // Calculate RPM: (pulses per second × 60) ÷ 2 pulses per revolution
+    float pulsesPerSecond = (float)pulses / (elapsedTime / 1000.0);
+    currentRPM = (pulsesPerSecond * 60.0) / 2.0;
     
+    // Filter unrealistic values
     if (currentRPM < 100 || currentRPM > 3000) {
       currentRPM = 0;
     }
     
     Serial.print("Pulses: ");
-    Serial.print(pulseCount);
-    Serial.print(" | RPM: ");
+    Serial.print(pulses);
+    Serial.print(" | Time: ");
+    Serial.print(elapsedTime);
+    Serial.print("ms | RPM: ");
     Serial.println(currentRPM);
   } else {
     currentRPM = 0;
-    Serial.println("No pulses");
+    Serial.println("No pulses detected");
   }
   
   lastRpmCalcTime = currentTime;
   return currentRPM;
 }
+
+
 
 
 
@@ -142,36 +150,43 @@ float estimateAirflow(byte duty) {
 void loop(void) {
   //unsigned int rpms = calculateRPM();
   
+
+ //setFanSpeedDither(currentDutyCycle);
+  
+  static unsigned long lastPrintTime = 0;
   if (millis() - lastPrintTime >= 1500) {
-
-    unsigned long pulses = pulseCount;
-     float rpm = (pulses * 60.0) / 1.5;
-     pulseCount = 0;
-    
-    Serial.print("Pulses: "); Serial.print(pulses);
-    Serial.print(" | RPM: "); Serial.println(rpm);
-
+     unsigned int rpms = readRPM();
+    Serial.print("RPM: ");
+    Serial.print(rpms);
     Serial.print(" | Duty: ");
     Serial.print(currentDutyCycle);
     Serial.println("%");
     
+    lastPrintTime = millis();
+  
+    
    //int rpm = estimateRPM(currentDutyCycle);
 float airflow = estimateAirflow(currentDutyCycle);
 
-
-//Serial.print("%, Estimated RPM: "); Serial.print(rpm);
-//Serial.print(", Airflow: "); Serial.print(airflow); Serial.println(" m³/h");
-
-    lastPrintTime = millis();
   }
   
   if (Serial.available() > 0) {
     String line = Serial.readStringUntil('\n');
+
+    // number = set fan speed
+    // P nnn = PWM frequency
+    if (line.startsWith("p#")) {
+      pwm_freq = line.substring(2).toInt();
+      ledcSetup(PWM_CHANNEL, pwm_freq, PWM_RESOLUTION);
+    } else {
+
     int input = line.toInt();
-    byte target = constrain(input, 0, 100);
+    float target = constrain(input, 0, 100);
     setFanSpeed(target);
+    }
     
   }
   
   delay(50);
+  setFanSpeedDither(currentDutyCycle);
 }
