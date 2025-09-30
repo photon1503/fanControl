@@ -1,6 +1,6 @@
-#define TACH_PIN 3
+#define TACH_PIN 2
 #define PWM_PIN 9  // Change to Pin 9 or 10 (Timer 1)
-#define PWM_MONITOR_PIN 2  // Separate pin to monitor PWM
+
 
 unsigned long lastRpmCalcTime = 0;
 unsigned long lastPrintTime = 0;
@@ -29,9 +29,8 @@ void setup(void) {
  
   
   
-    pinMode(PWM_MONITOR_PIN, INPUT);
+
   attachInterrupt(digitalPinToInterrupt(TACH_PIN), tachISR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(PWM_MONITOR_PIN), pwmMonitorISR, CHANGE);
   pinMode(TACH_PIN, INPUT);
   lastRpmCalcTime = millis();
   lastPrintTime = millis();
@@ -55,13 +54,7 @@ void setPwmFrequency(int pin, int divisor) {
   }
 }
 
-void pwmMonitorISR() {
-  if (digitalRead(PWM_MONITOR_PIN) == LOW) {
-    sampleWindowOpen = true;
-  } else {
-    sampleWindowOpen = false;
-  }
-}
+
 
 void tachISR() {
   if (sampleWindowOpen) { // Only count pulses during PWM HIGH
