@@ -1,3 +1,11 @@
+// PID controller variables
+float targetRPM = 0;
+float pidKp = 0.15;
+float pidKi = 0.005;
+float pidKd = 0.02;
+float pidIntegral = 0;
+float pidLastError = 0;
+float pidOutput = 0;
 #include <Arduino.h>
 
 void setFanSpeed(float dutyCycle);
@@ -60,18 +68,27 @@ void tachISR()
 
 float readRPM()
 {
+  // Measure pulses over a 1000ms window
+  pulseCount = 0;
+  unsigned long start = millis();
+  delay(1000);
+  unsigned long elapsed = millis() - start;
   unsigned long pulses = pulseCount;
-  return (pulses * 60.0) / 2.0; // 4 pulses per revolution
+  // Calculate RPM based on elapsed time and pulses
+  float rpm = (pulses * 60000.0) / (2.0 * elapsed); // 2 pulses per revolution
+  return rpm;
 }
 
 
 
 void setFanSpeed(float dutyCycle)
 {
+  // Clamp duty cycle to 0-100
+  if (dutyCycle < 0) dutyCycle = 0;
+  if (dutyCycle > 100) dutyCycle = 100;
   currentDutyCycle = dutyCycle;
-  
   // Arduino Nano uses 8-bit PWM (0-255)
-  byte pwmValue = map(dutyCycle, 0, 100, 0, 255); 
+  byte pwmValue = map((int)dutyCycle, 0, 100, 0, 255);
   analogWrite(PWM_PIN, pwmValue);
 }
 
@@ -100,27 +117,54 @@ void loop(void)
   unsigned long now = millis();
   if (now - lastPrintMillis >= 1000)
   {
-  float rpms = readRPM();
+    float rpms = readRPM();
+    // PID controller to reach target RPM (update only once per interval)
+    if (targetRPM > 0) {
+      float error = targetRPM - rpms;
+      pidIntegral += error;
+      float derivative = error - pidLastError;
+      pidOutput = pidKp * error + pidKi * pidIntegral + pidKd * derivative;
+      pidLastError = error;
+  // Limit duty cycle change per update to ±5%
+  float maxStep = 5.0;
+  float delta = pidOutput;
+  if (delta > maxStep) delta = maxStep;
+  if (delta < -maxStep) delta = -maxStep;
+  float newDuty = constrain(currentDutyCycle + delta, 0, 100);
+  setFanSpeed(newDuty);
+    }
   Serial.print("RPM: ");
-  Serial.print(rpms);
+  Serial.print(rpms, 2);
   Serial.print(" | Duty: ");
-  Serial.print(currentDutyCycle);
-  Serial.println("%");
-  float airflow = estimateAirflow((int)rpms);
-  Serial.print("Airflow: ");
-  Serial.print(airflow);
-  Serial.println(" m³/h");
-  lastPrintMillis = now;
-  pulseCount = 0;
+  Serial.print(currentDutyCycle, 1);
+  Serial.print("% | Target: ");
+  Serial.print(targetRPM, 1);
+  Serial.println(" rpm");
+    float airflow = estimateAirflow((int)rpms);
+    Serial.print("Airflow: ");
+    Serial.print(airflow);
+    Serial.println(" m³/h");
+    lastPrintMillis = now;
+    pulseCount = 0;
   }
 
   if (Serial.available() > 0)
   {
     String line = Serial.readStringUntil('\n');
-    int input = line.toInt();
-    float target = constrain(input, 0, 100);
-    setFanSpeed(target);
+    line.trim();
+    if (line.startsWith("R")) {
+      int rpm = line.substring(1).toInt();
+      targetRPM = constrain(rpm, 0, 3000); // Set target RPM (adjust max as needed)
+      Serial.print("[CMD] Target RPM set to: ");
+      Serial.println(targetRPM);
+    } else {
+      int input = line.toInt();
+      float target = constrain(input, 0, 100);
+      setFanSpeed(target);
+    }
   }
+
+  // ...existing code...
 
 
 
