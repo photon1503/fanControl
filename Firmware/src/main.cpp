@@ -1,11 +1,24 @@
+// RPM filtering variables
+#define RPM_FILTER_SIZE 10
+float rpmFilterBuffer[RPM_FILTER_SIZE] = {0};
+int rpmFilterIndex = 0;
+float rpmFiltered = 0;
+// Auto-tune state variables
+bool pidCalibrating = false;
+unsigned long calStartTime = 0;
+float calTargetRPM = 0;
+float calHighDuty = 60;
+float calLowDuty = 40;
+float calLastCrossTime = 0;
+float calLastRPM = 0;
+int calCrossCount = 0;
+float calPeriodSum = 0;
+float calAmpSum = 0;
+float calMaxRPM = 0;
+float calMinRPM = 99999;
 // PID controller variables
 float targetRPM = 0;
-float pidKp = 0.15;
-float pidKi = 0.005;
-float pidKd = 0.02;
-float pidIntegral = 0;
-float pidLastError = 0;
-float pidOutput = 0;
+
 #include <Arduino.h>
 
 void setFanSpeed(float dutyCycle);
@@ -85,10 +98,10 @@ void setFanSpeed(float dutyCycle)
 {
   // Clamp duty cycle to 0-100
   if (dutyCycle < 0) dutyCycle = 0;
-  if (dutyCycle > 100) dutyCycle = 100;
+  if (dutyCycle > 255) dutyCycle = 100;
   currentDutyCycle = dutyCycle;
   // Arduino Nano uses 8-bit PWM (0-255)
-  byte pwmValue = map((int)dutyCycle, 0, 100, 0, 255);
+  byte pwmValue = dutyCycle;
   analogWrite(PWM_PIN, pwmValue);
 }
 
@@ -118,29 +131,37 @@ void loop(void)
   if (now - lastPrintMillis >= 1000)
   {
     float rpms = readRPM();
-    // PID controller to reach target RPM (update only once per interval)
-    if (targetRPM > 0) {
-      float error = targetRPM - rpms;
-      pidIntegral += error;
-      float derivative = error - pidLastError;
-      pidOutput = pidKp * error + pidKi * pidIntegral + pidKd * derivative;
-      pidLastError = error;
-  // Limit duty cycle change per update to ±5%
-  float maxStep = 5.0;
-  float delta = pidOutput;
-  if (delta > maxStep) delta = maxStep;
-  if (delta < -maxStep) delta = -maxStep;
-  float newDuty = constrain(currentDutyCycle + delta, 0, 100);
-  setFanSpeed(newDuty);
-    }
-  Serial.print("RPM: ");
-  Serial.print(rpms, 2);
-  Serial.print(" | Duty: ");
-  Serial.print(currentDutyCycle, 1);
-  Serial.print("% | Target: ");
-  Serial.print(targetRPM, 1);
-  Serial.println(" rpm");
-    float airflow = estimateAirflow((int)rpms);
+    // Moving average RPM filter
+    rpmFilterBuffer[rpmFilterIndex] = rpms;
+    rpmFilterIndex = (rpmFilterIndex + 1) % RPM_FILTER_SIZE;
+    float rpmSum = 0;
+    for (int i = 0; i < RPM_FILTER_SIZE; i++) rpmSum += rpmFilterBuffer[i];
+    rpmFiltered = rpmSum / RPM_FILTER_SIZE;
+    // Simple duty cycle adjustment to reach target RPM
+        if (targetRPM > 0) {
+          float error = targetRPM - rpmFiltered;
+          float deadband = 20.0; // No adjustment if error is within ±5 RPM
+          float Kp = 0.03;      // Proportional gain (tune as needed)
+          float maxStep = 4.0;  // Maximum duty cycle change per update
+          float delta = 0;
+          if (abs(error) > deadband) {
+            delta = Kp * error;
+            // Limit change per update
+            if (delta > maxStep) delta = maxStep;
+            if (delta < -maxStep) delta = -maxStep;
+          }
+          float newDuty = currentDutyCycle + delta;
+          newDuty = constrain(newDuty, 0, 255);
+          setFanSpeed(newDuty);
+        }
+    Serial.print("RPM: ");
+    Serial.print(rpmFiltered, 2);
+    Serial.print(" | Duty: ");
+    Serial.print(currentDutyCycle, 1);
+    Serial.print("% | Target: ");
+    Serial.print(targetRPM, 1);
+    Serial.println(" rpm");
+    float airflow = estimateAirflow((int)rpmFiltered);
     Serial.print("Airflow: ");
     Serial.print(airflow);
     Serial.println(" m³/h");
@@ -154,17 +175,19 @@ void loop(void)
     line.trim();
     if (line.startsWith("R")) {
       int rpm = line.substring(1).toInt();
-      targetRPM = constrain(rpm, 0, 3000); // Set target RPM (adjust max as needed)
+      targetRPM = constrain(rpm, 0, 3000);
       Serial.print("[CMD] Target RPM set to: ");
       Serial.println(targetRPM);
-    } else {
+    }  else {
       int input = line.toInt();
-      float target = constrain(input, 0, 100);
+      float target = constrain(input, 0, 255);
       setFanSpeed(target);
     }
   }
+ 
+  
 
-  // ...existing code...
+
 
 
 
