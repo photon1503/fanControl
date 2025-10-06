@@ -1,3 +1,6 @@
+// PID stabilization timer
+unsigned long pidStableStart = 0;
+bool pidStableReady = false;
 /*
 Use serial commands to tune:
 
@@ -94,8 +97,8 @@ float currentRPM = 0;
 int currentDutyCycle = 0;
 
 // Lookup tables
-const int pwmPoints[] = {0, 26, 51, 77, 128, 179, 255};
-const int rpmPoints[] = {0, 205, 350, 560, 980, 1370, 2300};
+const int pwmPoints[] = {0, 26, 51, 77, 128, 179, 254, 255};
+const int rpmPoints[] = {0, 205, 350, 560, 980, 1370, 1900, 2300};
 const float airflowPoints[] = {0, 4.1, 8.3, 12.4, 16.6, 24.9, 33.2, 38.2};
 
 void setup(void) {
@@ -122,6 +125,23 @@ void setup(void) {
 
 void tachISR() {
   pulseCount++;
+}
+
+float MovingAvgRPM(float newRPM) {
+  static const int size = 10;
+  static float buffer[size] = {0};
+  static int index = 0;
+  static float sum = 0;
+
+
+
+  sum -= buffer[index];
+  buffer[index] = newRPM;
+  sum += newRPM;
+  
+  index = (index + 1) % size;
+  
+  return sum / size;
 }
 
 float readRPM() {
@@ -374,21 +394,27 @@ void loop(void) {
   // Read RPM more frequently
   float currentRPM = readRPM();
   
-  // Update moving average filter
-  rpmFilterBuffer[rpmFilterIndex] = currentRPM;
-  rpmFilterIndex = (rpmFilterIndex + 1) % RPM_FILTER_SIZE;
-  
-  float rpmSum = 0;
-  for (int i = 0; i < RPM_FILTER_SIZE; i++) {
-    rpmSum += rpmFilterBuffer[i];
-  }
-  rpmFiltered = rpmSum / RPM_FILTER_SIZE;
+
+  rpmFiltered = MovingAvgRPM(currentRPM);
   
   // Handle auto-tune or normal PID
   if (autoTuneRunning) {
     updateAutoTune();
   } else if (targetRPM > 0) {
-    updatePID();
+    // Wait for RPM to stabilize for at least 10 seconds before PID control
+    if (!pidStableReady) {
+      if (pidStableStart == 0) pidStableStart = millis();
+      if (millis() - pidStableStart >= 10000) pidStableReady = true;
+    }
+    if (pidStableReady) {
+      updatePID();
+      pidStableReady = false; // Reset until next stabilization period
+      pidStableStart = millis(); // Restart stabilization timer
+    }
+  } else {
+    // Reset stabilization timer if PID is not active
+    pidStableStart = 0;
+    pidStableReady = false;
   }
   
   // Print status every second
