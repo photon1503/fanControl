@@ -95,8 +95,8 @@ int currentDutyCycle = 0;
 
 // Lookup tables
 const int pwmPoints[] = {0, 26, 51, 77, 128, 179, 255};
-const int rpmPoints[] = {0, 225, 450, 900, 1800, 2000, 2200};
-const float airflowPoints[] = {0, 5.8, 11.5, 23, 39, 48, 55.5};
+const int rpmPoints[] = {0, 205, 350, 560, 980, 1370, 2300};
+const float airflowPoints[] = {0, 4.1, 8.3, 12.4, 16.6, 24.9, 33.2, 38.2};
 
 void setup(void) {
   Serial.begin(115200);
@@ -127,28 +127,27 @@ void tachISR() {
 float readRPM() {
   static unsigned long lastCalcTime = 0;
   static unsigned long lastPulseCount = 0;
-  
+
   unsigned long currentTime = millis();
   unsigned long timeDiff = currentTime - lastCalcTime;
-  
-  // Calculate RPM more frequently (every 200ms instead of 1000ms)
-  if (timeDiff < 200) {
+
+  // Calculate RPM every 1000ms for stability
+  if (timeDiff < 1000) {
     return currentRPM; // Return last calculated RPM
   }
-  
+
   noInterrupts();
   unsigned long pulses = pulseCount - lastPulseCount;
-  pulseCount = 0;
-  lastPulseCount = 0;
+  lastPulseCount = pulseCount;
   interrupts();
-  
+
   if (timeDiff > 0 && pulses > 0) {
     // 2 pulses per revolution for most fans
     currentRPM = (pulses * 60000.0) / (2.0 * timeDiff);
   } else {
     currentRPM = 0;
   }
-  
+
   lastCalcTime = currentTime;
   return currentRPM;
 }
