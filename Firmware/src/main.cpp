@@ -483,6 +483,20 @@ void loop(void)
       Serial.print("[CMD] Kd set to: ");
       Serial.println(Kd);
     }
+    if (line.startsWith("RESET"))
+    {
+      targetRPM_SIDE = 0;
+      targetRPM_BACK = 0;
+      setFanSpeed(0, SIDE);
+      setFanSpeed(0, BACK);
+      integral = 0;
+      lastError = 0;
+      Serial.println("[CMD] System reset: Targets cleared and fans stopped.");
+    }
+    if (line.startsWith("REBOOT"))
+    {
+      asm volatile ("  jmp 0"); // Jump to address 0 to reboot
+    } 
     if (line.startsWith("S") && line.indexOf('#') > 0)
     {
       int group = line.substring(1, line.indexOf('#')).toInt();
