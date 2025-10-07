@@ -115,7 +115,7 @@ namespace ASCOM.LocalServer
             lock (lockObject)
             {
                 SharedSerial.Transmit(message);
-                return SharedSerial.ReceiveTerminated("#");
+                return SharedSerial.ReceiveTerminated("\n");
             }
         }
 

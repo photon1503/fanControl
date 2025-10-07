@@ -78,13 +78,13 @@ namespace ASCOM.FanControl.Switch
 
         private static List<Guid> uniqueIds = new List<Guid>(); // List of driver instance unique IDs
 
-        internal static double sideRPM = 0;
+        internal static double CurrentSideRPM = 0;
         internal static long sideTargetRPM = 0;
-        internal static double backRPM = 0;
+        internal static double CurrentBackRPM = 0;
         internal static long backTargetRPM = 0;
         internal static bool backAuto = false;
-        internal static double sidePWM = 0;
-        internal static double backPWM = 0;
+        internal static double CurrentSidePWM = 0;
+        internal static double CurrenBackPWM = 0;
         internal static double mirrorTemp = 0;
         internal static double mirrorHum = 0;
         internal static double mirrorPress = 0;
@@ -94,6 +94,8 @@ namespace ASCOM.FanControl.Switch
         internal static double kp = 0.2;
         internal static double ki = 0.05;
         internal static double kd = 0.02;
+        internal static double backTargetPWM = 0;
+        internal static double sideTargetPWM = 0;
 
         /// <summary>
         /// Initializes a new instance of the device Hardware class.
@@ -451,7 +453,7 @@ namespace ASCOM.FanControl.Switch
                                                                        //   connectedState = true;
 
                         // start a timer to read serial using DataReceived function every second
-                        double interval = 1000; // milliseconds
+                        double interval = 500; // milliseconds
                         System.Timers.Timer timer = new System.Timers.Timer(interval);
                         timer.Elapsed += new System.Timers.ElapsedEventHandler(DataReceived);
                         timer.Start();
@@ -583,7 +585,7 @@ namespace ASCOM.FanControl.Switch
 
         #region ISwitch Implementation
 
-        private static short numSwitch = 11;
+        private static short numSwitch = 15;
 
         /// <summary>
         /// The number of switches managed by this driver
@@ -609,9 +611,9 @@ namespace ASCOM.FanControl.Switch
             switch (id)
             {
                 case 0: return "Side PWM";
-                case 1: return "Side RPM Target";
+                case 1: return "Side RPM";
                 case 2: return "Back PWM";
-                case 3: return "Back RPM Target";
+                case 3: return "Back RPM";
                 case 4: return "Back Auto";
                 case 5: return "Mirror Temp";
                 case 6: return "Mirror Hum";
@@ -619,6 +621,11 @@ namespace ASCOM.FanControl.Switch
                 case 8: return "Outside Temp";
                 case 9: return "Outside Hum";
                 case 10: return "Outside Press";
+                case 11: return "Set RPM Side";
+                case 12: return "Set RPM Back";
+                case 13: return "Set PWM Side";
+                case 14: return "Set PWM Back";
+
                 default:
                     LogMessage("GetSwitchName", $"GetSwitchName({id}) - Invalid switch ID");
                     throw new ASCOM.InvalidValueException($"GetSwitchName({id}) - Invalid switch ID");
@@ -651,9 +658,9 @@ namespace ASCOM.FanControl.Switch
             switch (id)
             {
                 case 0: return "Side fan PWM value (0-255)";
-                case 1: return "Side fan target RPM (0 for off)";
+                case 1: return "Side fan RPM ";
                 case 2: return "Back fan PWM value (0-255)";
-                case 3: return "Back fan target RPM (0 for off)";
+                case 3: return "Back fan RPM ";
                 case 4: return "Back fan auto mode (true/false)";
                 case 5: return "Mirror temperature (C)";
                 case 6: return "Mirror humidity (%)";
@@ -661,6 +668,10 @@ namespace ASCOM.FanControl.Switch
                 case 8: return "Outside temperature (C)";
                 case 9: return "Outside humidity (%)";
                 case 10: return "Outside pressure (hPa)";
+                case 11: return "Set Side fan target RPM (0 for off)";
+                case 12: return "Set Back fan target RPM (0 for off)";
+                case 13: return "Set Side fan PWM value (0-255)";
+                case 14: return "Set Back fan PWM value (0-255)";
                 default:
                     LogMessage("GetSwitchDescription", $"GetSwitchDescription({id}) - Invalid switch ID");
                     throw new ASCOM.InvalidValueException($"GetSwitchDescription({id}) - Invalid switch ID");
@@ -682,9 +693,12 @@ namespace ASCOM.FanControl.Switch
             switch (id)
             {
                 case 0: // Side PWM
-                case 1: // Side RPM Target
+                case 1: // Side RPM
                 case 2: // Back PWM
-                case 3: // Back RPM Target
+                case 3: // Back RPM
+                    writable = false;
+                    break;
+
                 case 4: // Back Auto
                     writable = true;
                     break;
@@ -696,6 +710,13 @@ namespace ASCOM.FanControl.Switch
                 case 9: // Outside Hum
                 case 10: // Outside Press
                     writable = false;
+                    break;
+
+                case 11: // Set RPM Side
+                case 12: // Set RPM Back
+                case 13: // Set PWM Side
+                case 14: // Set PWM Back
+                    writable = true;
                     break;
 
                 default:
@@ -716,6 +737,10 @@ namespace ASCOM.FanControl.Switch
         {
             Validate("GetSwitch", id);
             //TODO
+            if (id == 4) // Back Auto
+            {
+                return backAuto;
+            }
             return false;
         }
 
@@ -733,8 +758,18 @@ namespace ASCOM.FanControl.Switch
                 LogMessage("SetSwitch", str);
                 throw new MethodNotImplementedException(str);
             }
-            LogMessage("SetSwitch", $"SetSwitch({id}) = {state} - not implemented");
-            throw new MethodNotImplementedException("SetSwitch");
+            switch (id)
+            {
+                case 4: // Back Auto
+                    backAuto = state;
+                    LogMessage("SetSwitch", $"SetSwitch({id}) = {state}");
+                    SharedResources.SharedSerial.Transmit($"T#{(state ? "ON" : "OFF")}\n");
+                    break;
+
+                default:
+                    LogMessage("SetSwitch", $"SetSwitch({id}) = {state} - not implemented");
+                    throw new MethodNotImplementedException("SetSwitch");
+            }
         }
 
         #endregion Boolean switch members
@@ -752,10 +787,10 @@ namespace ASCOM.FanControl.Switch
             switch (id)
             {
                 case 0: return 255; // Side PWM
-                case 1: return 2200; // Side RPM Target
+                case 1: return 2200; // Side RPM
                 case 2: return 255; // Back PWM
 
-                case 3: return 2200; // Back RPM Target
+                case 3: return 2200; // Back RPM
                 case 4: return 1; // Back Auto
                 case 5: return 100; // Mirror Temp
                 case 6: return 100; // Mirror Hum
@@ -763,6 +798,10 @@ namespace ASCOM.FanControl.Switch
                 case 8: return 40; // Outside Temp
                 case 9: return 100; // Outside Hum
                 case 10: return 1100; // Outside Press
+                case 11: return 2200; // Set RPM Side
+                case 12: return 2200; // Set RPM Back
+                case 13: return 255; // Set PWM Side
+                case 14: return 255; // Set PWM Back
             }
             return 0;
         }
@@ -793,12 +832,16 @@ namespace ASCOM.FanControl.Switch
                 case 2: return 1; // Back PWM
                 case 3: return 1; // Back RPM Target
                 case 4: return 1; // Back Auto
-                case 5: return 0.1; // Mirror Temp
-                case 6: return 0.1; // Mirror Hum
+                case 5: return 0.01; // Mirror Temp
+                case 6: return 0.01; // Mirror Hum
                 case 7: return 0.1; // Mirror Press
-                case 8: return 0.1; // Outside Temp
-                case 9: return 0.1; // Outside Hum
+                case 8: return 0.01; // Outside Temp
+                case 9: return 0.01; // Outside Hum
                 case 10: return 0.1; // Outside Press
+                case 11: return 1; // Set RPM Side
+                case 12: return 1; // Set RPM Back
+                case 13: return 1; // Set PWM Side
+                case 14: return 1; // Set PWM Back
             }
             return 0;
         }
@@ -814,10 +857,10 @@ namespace ASCOM.FanControl.Switch
             Validate("GetSwitchValue", id);
             switch (id)
             {
-                case 0: return sidePWM;
-                case 1: return sideRPM;
-                case 2: return backPWM;
-                case 3: return backRPM;
+                case 0: return CurrentSidePWM;
+                case 1: return CurrentSideRPM;
+                case 2: return CurrenBackPWM;
+                case 3: return CurrentBackRPM;
                 case 4: return backAuto ? 1 : 0;
                 case 5: return mirrorTemp;
                 case 6: return mirrorHum;
@@ -825,6 +868,11 @@ namespace ASCOM.FanControl.Switch
                 case 8: return outsideTemp;
                 case 9: return outsideHum;
                 case 10: return outsidePress;
+                case 11: return sideTargetRPM;
+                case 12: return backTargetRPM;
+                case 13: return sideTargetPWM;
+                case 14: return backTargetPWM;
+
                 default:
                     return 0;
             }
@@ -843,8 +891,37 @@ namespace ASCOM.FanControl.Switch
                 LogMessage("SetSwitchValue", $"SetSwitchValue({id}) - Cannot write");
                 throw new ASCOM.MethodNotImplementedException($"SetSwitchValue({id}) - Cannot write");
             }
-            LogMessage("SetSwitchValue", $"SetSwitchValue({id}) = {value} - not implemented");
-            throw new MethodNotImplementedException("SetSwitchValue");
+            switch (id)
+            {
+                case 11: // Set RPM Side
+                    sideTargetRPM = (int)value;
+                    SharedResources.SharedSerial.Transmit($"R1#{value}\n");
+                    LogMessage("SetSwitchValue", $"SetSwitchValue({id}) = {value}");
+
+                    break;
+
+                case 12: // Set RPM Back
+                    backTargetRPM = (int)value;
+                    SharedResources.SharedSerial.Transmit($"R2#{value}\n");
+                    LogMessage("SetSwitchValue", $"SetSwitchValue({id}) = {value}");
+                    break;
+
+                case 13: // Set PWM Side
+                    SharedResources.SharedSerial.Transmit("S1#{value}\n");
+                    LogMessage("SetSwitchValue", $"SetSwitchValue({id}) = {value}");
+                    sideTargetPWM = (int)value;
+                    break;
+
+                case 14: // Set PWM Back
+                    SharedResources.SharedSerial.Transmit($"S2#{value}\n");
+                    LogMessage("SetSwitchValue", $"SetSwitchValue({id}) = {value}");
+                    backTargetPWM = (int)value;
+                    break;
+
+                default:
+                    LogMessage("SetSwitchValue", $"SetSwitchValue({id}) = {value} - not implemented");
+                    throw new MethodNotImplementedException("SetSwitchValue");
+            }
         }
 
         #endregion Analogue members
@@ -1075,7 +1152,6 @@ namespace ASCOM.FanControl.Switch
         {
             try
             {
-                // [0D][0A]
                 string msg = SharedResources.SharedSerial.ReceiveTerminated("\n");
 
                 if (string.IsNullOrEmpty(msg))
@@ -1084,13 +1160,15 @@ namespace ASCOM.FanControl.Switch
                 }
 
                 tl.LogMessage("DataReceived", $"Received message: {msg}");
-                /*  * TEMP,OFF,24.42,41.30,1003.94,24.18,41.54,1005.15,N/A
+                /*
   *
  (temp,hum,press,temp,hum,press,dutycycle)
- SIDE,0.0,0,0.0,0.0,0.030,0.010,0.005,0.00
- BACK,-0.0,0,0.0,0.0,0.030,0.010,0.005,0.00
+SIDE,968.7,130,1000.0,31.3,0.030,0.010,0.005,16.48
 
  (rpm,duty,targetrpm,delta,kp,ki,kd,airflow)
+BACK,0.0,0,0.0,-0.0,0.030,0.010,0.005,0.00
+TEMP,OFF,23.30,40.29,1005.56,23.02,40.50,1006.61,N/A
+
  */
                 // split message
                 string[] parts = msg.Split(',');
@@ -1099,27 +1177,27 @@ namespace ASCOM.FanControl.Switch
                     switch (parts[0])
                     {
                         case "SIDE":
-                            if (parts.Length >= 4)
+                            if (parts.Length >= 3)
                             {
                                 double.TryParse(parts[1], out double tsideRpm);
                                 double.TryParse(parts[2], out double tsideDuty);
                                 long.TryParse(parts[3], out long tsideTarget);
 
-                                sideRPM = tsideRpm;
-                                sidePWM = tsideDuty;
+                                CurrentSideRPM = tsideRpm;
+                                CurrentSidePWM = tsideDuty;
                                 sideTargetRPM = tsideTarget;
                             }
                             break;
 
                         case "BACK":
-                            if (parts.Length >= 4)
+                            if (parts.Length >= 3)
                             {
                                 double.TryParse(parts[1], out double tbackRpm);
                                 double.TryParse(parts[2], out double tbackDuty);
                                 long.TryParse(parts[3], out long tbackTarget);
 
-                                backRPM = tbackRpm;
-                                backPWM = tbackDuty;
+                                CurrentBackRPM = tbackRpm;
+                                CurrenBackPWM = tbackDuty;
                                 backTargetRPM = tbackTarget;
                             }
                             break;
