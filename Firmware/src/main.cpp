@@ -9,8 +9,8 @@
  *   - Lookup tables for PWM/RPM/airflow mapping
  *   - Independent duty cycle and RPM tracking per group
  *   - Temperature-based back fan control:
- *       - If mirror temp is hotter than outside temp by >3°C, back fans run at high speed
- *       - If mirror temp is hotter by 0.5–3°C, back fans run at speed linearly scaled from 0 to max
+ *       - If mirror temp is hotter than outside temp by >3°C, back fans run at 100%
+ *       - If mirror temp is hotter by 0.5–3°C, back fans run at speed linearly scaled from 60% to 99%
  *       - If mirror temp is cooler or equal, back fans are off
  *
  * Serial Commands:
@@ -32,8 +32,9 @@
  * Hardware:
  *   - Arduino Nano (ATmega328)
  *   - BME280 sensors for temperature (I2C addresses 0x76 and 0x77)
- *   - 4-pin PWM fans (SIDE: Pin 9, BACK: Pin 10. Optimized for Noctua NF-A8 PWM)
+ *   - 4-pin PWM fans (SIDE: Pin 9, BACK: Pin 10.) 
  *   - Tachometer inputs (SIDE: Pin 2, BACK: Pin 3)
+ *   - Optimized for Noctua NF-A8 PWM fans but should work with most 4-pin PWM fans
  *
  * Author: Gerald Hitz
  * Date: 2025-10-07
