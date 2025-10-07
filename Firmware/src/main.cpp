@@ -8,6 +8,10 @@
  *   - Moving average RPM filtering for stability
  *   - Lookup tables for PWM/RPM/airflow mapping
  *   - Independent duty cycle and RPM tracking per group
+ *   - Temperature-based back fan control:
+ *       - If mirror temp is hotter than outside temp by >3°C, back fans run at high speed
+ *       - If mirror temp is hotter by 0.5–3°C, back fans run at speed linearly scaled from 0 to max
+ *       - If mirror temp is cooler or equal, back fans are off
  *
  * Serial Commands:
  *   R1#900   - Set target RPM for SIDE fan to 900
@@ -25,7 +29,8 @@
  *
  * Hardware:
  *   - Arduino Nano (ATmega328)
- *   - 4-pin PWM fans (SIDE: Pin 9, BACK: Pin 10)
+ *   - BME280 sensors for temperature (I2C addresses 0x76 and 0x77)
+ *   - 4-pin PWM fans (SIDE: Pin 9, BACK: Pin 10. Optimized for Noctua NF-A8 PWM)
  *   - Tachometer inputs (SIDE: Pin 2, BACK: Pin 3)
  *
  * Author: Gerald Hitz
@@ -37,7 +42,6 @@
 #include <SPI.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
-
 
 Adafruit_BME280 bmeOutdoor; // I2C
 Adafruit_BME280 bmeMirror;
@@ -52,6 +56,8 @@ float estimateAirflow(int rpm);
 // PID stabilization timer
 unsigned long pidStableStart = 0;
 bool pidStableReady = false;
+
+bool tempCompensationEnabled = false;
 
 // RPM filtering variables
 // Use longer filter for slow fans
@@ -102,7 +108,8 @@ const float airflowPoints[] = {0, 4.1, 8.3, 12.4, 16.6, 24.9, 33.2, 38.2};
 void setup(void)
 {
   Serial.begin(115200);
-    while (!Serial);
+  while (!Serial)
+    ;
   Serial.println("Fan Controller");
 
   // Set Timer 1 to 25kHz PWM for 4-pin fans (pin 9/10)
@@ -128,18 +135,22 @@ void setup(void)
   setFanSpeed(0, SIDE);
   setFanSpeed(0, BACK);
 
- delay(1000);
-  if (!bmeOutdoor.begin(0x76))  {
+  delay(1000);
+  if (!bmeOutdoor.begin(0x76))
+  {
     Serial.println("Could not find a valid BME280 Outdoor sensor, check wiring!");
-  } 
-  else {
+  }
+  else
+  {
     Serial.println("BME280 Outoor sensor found!");
   }
 
-    if (!bmeMirror.begin(0x77))  {
+  if (!bmeMirror.begin(0x77))
+  {
     Serial.println("Could not find a valid BME280 Mirror sensor, check wiring!");
-  } 
-  else {
+  }
+  else
+  {
     Serial.println("BME280 Mirror sensor found!");
   }
 }
@@ -439,7 +450,7 @@ void PrintStatus()
   Serial.print(estimateAirflow((int)rpmFilteredBack));
   Serial.println(" m³/h");
 
-      Serial.print("OUT: T = ");
+  Serial.print("OUT: T = ");
   Serial.print(bmeOutdoor.readTemperature());
   Serial.print(" °C, H = ");
   Serial.print(bmeOutdoor.readHumidity());
@@ -447,15 +458,37 @@ void PrintStatus()
   Serial.print(bmeOutdoor.readPressure() / 100.0F);
   Serial.println(" hPa");
 
-        Serial.print("MIRROR: T = ");
+  Serial.print("MIRROR: T = ");
   Serial.print(bmeMirror.readTemperature());
   Serial.print(" °C, H = ");
   Serial.print(bmeMirror.readHumidity());
   Serial.print(" %, P = ");
   Serial.print(bmeMirror.readPressure() / 100.0F);
   Serial.println(" hPa");
+}
 
-
+// Add temperature-based fan control logic
+float getBackFanDutyFromTemps(float mirrorTemp, float outsideTemp)
+{
+  float delta = mirrorTemp - outsideTemp;
+  if (delta > 3.0)
+  {
+    // If mirror is much hotter, run back fans at full speed
+    return 255.0;
+  }
+  else if (delta > 0.5)
+  {
+    // If mirror is slightly hotter, run back fans linearly from 0 to 255
+    float duty = (delta / 3.0) * 254.0; // Scale to 0-254
+    // constrain to 40-254
+    duty = constrain(duty, 60.0, 254.0);
+    return duty;
+  }
+  else
+  {
+    // If mirror is cooler or equal, turn off back fans
+    return 0.0;
+  }
 }
 
 void loop(void)
@@ -465,6 +498,23 @@ void loop(void)
   if (now - lastPrintMillis >= 1000)
   {
     PrintStatus();
+
+    if (tempCompensationEnabled)
+    {
+      float outdoorTemp = bmeOutdoor.readTemperature();
+      float mirrorTemp = bmeMirror.readTemperature();
+
+      int backDuty = (int)getBackFanDutyFromTemps(mirrorTemp, outdoorTemp);
+      setFanSpeed(backDuty, BACK);
+      targetRPM_BACK = 0; // Disable PID control when temp compensation is active
+      Serial.print("[TEMP] Mirror: ");
+      Serial.print(mirrorTemp);
+      Serial.print(" °C, Outdoor: ");
+      Serial.print(outdoorTemp);
+      Serial.print(" °C, Back Fan Duty: ");
+      Serial.println(backDuty);
+
+    }
 
     lastPrintMillis = now;
   }
@@ -538,8 +588,25 @@ void loop(void)
     }
     if (line.startsWith("REBOOT"))
     {
-      asm volatile ("  jmp 0"); // Jump to address 0 to reboot
-    } 
+      asm volatile("  jmp 0"); // Jump to address 0 to reboot
+    }
+    if (line.startsWith("T#"))
+
+    {
+      // read value after #
+      String valueStr = line.substring(2);
+      valueStr.trim();
+      if (valueStr == "ON")
+      {
+        tempCompensationEnabled = true;
+        Serial.println("[CMD] Temperature compensation enabled.");
+      }
+      else if (valueStr == "OFF")
+      {
+        tempCompensationEnabled = false;
+        Serial.println("[CMD] Temperature compensation disabled.");
+      }
+    }
     if (line.startsWith("S") && line.indexOf('#') > 0)
     {
       int group = line.substring(1, line.indexOf('#')).toInt();
@@ -558,6 +625,12 @@ void loop(void)
       }
     }
   }
+
+  // Example usage in loop (replace with your actual temp readings):
+  // float mirrorTemp = ...;
+  // float outsideTemp = ...;
+  // int backDuty = (int)getBackFanDutyFromTemps(mirrorTemp, outsideTemp);
+  // setFanSpeed(backDuty, BACK);
 
   delay(50);
 }
