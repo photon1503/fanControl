@@ -7,47 +7,21 @@ Use serial commands to tune:
 P0.2 - set Kp to 0.2
 I0.05 - set Ki to 0.05  
 D0.02 - set Kd to 0.02
-T - start auto-tune calibration
+
 
 Increase Kp for faster response (but may cause oscillation)
 Increase Ki to eliminate steady-state error
 Increase Kd to reduce overshoot
 
-Key Auto-Tune Features:
-Ziegler-Nichols Method: Uses the ultimate gain (Ku) and ultimate period (Tu) to calculate PID parameters
-
-Oscillation Detection: Automatically detects when the system starts oscillating around the setpoint
-
-Adaptive Testing: Tries different output levels if oscillations aren't detected initially
-
-Safety Features:
-
-30-second timeout
-
-Minimum oscillation count requirement
-
-Parameter limits to prevent unstable values
-
-Real-time Feedback: Shows progress during the tuning process
-
-Type T in serial monitor to start auto-tune
-
-The system will oscillate the fan to find the ultimate gain and period
-
-After completion, it will display and apply the calculated PID values
-
-You can further fine-tune using the P, I, D commands
 */
 #include <Arduino.h>
 
 void tachISR();
-float readRPM();
-void setFanSpeed(float dutyCycle);
-void updatePID();
+float readRPM_1();
+void setFanSpeed_1(float dutyCycle);
+void updatePID_1();
 float estimateAirflow(int rpm);
-void startAutoTune();
-void updateAutoTune();
-void finishAutoTune();
+
 
 
 // RPM filtering variables
@@ -68,26 +42,14 @@ float Kp = 0.03;   // Even lower proportional gain
 float Ki = 0.01;   // Lower integral gain
 float Kd = 0.005;  // Lower derivative gain
 
-// Auto-tune variables
-bool autoTuneRunning = false;
-unsigned long autoTuneStartTime = 0;
-unsigned long lastAutoTuneUpdate = 0;
-int autoTuneState = 0;
-float autoTuneMaxRPM = 0;
-float autoTuneMinRPM = 9999;
-float autoTuneLastRPM = 0;
-unsigned long autoTuneLastCrossTime = 0;
-unsigned long autoTuneLastUpdate = 0;
-int autoTuneCrossCount = 0;
-float autoTunePeriodSum = 0;
-float autoTuneAmplitudeSum = 0;
-float autoTuneSetpoint = 0;
-float autoTuneOutput = 0;
-bool autoTuneOutputHigh = false;
 
-// Arduino Nano pins
-#define TACH_PIN 2
-#define PWM_PIN 9 // Use Pin 9 (Timer 1)
+// Group 1 (Side)
+#define TACH_PIN_1 2
+#define PWM_PIN_1 9 // Use Pin 9 (Timer 1)
+
+// Group 2 (Back)
+#define TACH_PIN_2 3
+#define PWM_PIN_2 10 // Use Pin 10 (Timer 1)
 
 // RPM measurement variables
 volatile unsigned long pulseCount = 0;
@@ -103,24 +65,28 @@ const float airflowPoints[] = {0, 4.1, 8.3, 12.4, 16.6, 24.9, 33.2, 38.2};
 
 void setup(void) {
   Serial.begin(115200);
-  Serial.println("Fan Controller - Improved Response");
-  Serial.println("Commands: R<rpm>, P<value>, I<value>, D<value>, T (auto-tune)");
+  Serial.println("Fan Controller");
 
-  pinMode(PWM_PIN, OUTPUT);
+
+  pinMode(PWM_PIN_1, OUTPUT);
+  pinMode(PWM_PIN_2, OUTPUT);
   // Set Timer 1 to 25kHz PWM for 4-pin fans (pin 9/10)
   TCCR1A = _BV(COM1A1) | _BV(COM1B1) | _BV(WGM11);
   TCCR1B = _BV(WGM13) | _BV(CS10);
   ICR1 = 320; // 25kHz
   
-  pinMode(TACH_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(TACH_PIN), tachISR, FALLING);
+  pinMode(TACH_PIN_1, INPUT_PULLUP);
+  pinMode(TACH_PIN_2, INPUT_PULLUP);
   
+  attachInterrupt(digitalPinToInterrupt(TACH_PIN_1), tachISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(TACH_PIN_2), tachISR, FALLING);
+
   lastRpmTime = millis();
   lastPIDTime = millis();
   
-  setFanSpeed(100);
+  setFanSpeed_1(100);
   delay(500);
-  setFanSpeed(0);
+  setFanSpeed_1(0);
 }
 
 void tachISR() {
@@ -144,7 +110,7 @@ float MovingAvgRPM(float newRPM) {
   return sum / size;
 }
 
-float readRPM() {
+float readRPM_1() {
   static unsigned long lastCalcTime = 0;
   static unsigned long lastPulseCount = 0;
 
@@ -172,16 +138,13 @@ float readRPM() {
   return currentRPM;
 }
 
-void setFanSpeed(float dutyCycle) {
- 
+void setFanSpeed_1(float dutyCycle) {
 
-
-    analogWrite(PWM_PIN, (uint8_t)dutyCycle);
+    analogWrite(PWM_PIN_1, (uint8_t)dutyCycle);
     currentDutyCycle = dutyCycle;
-
 }
 
-void updatePID() {
+void updatePID_1() {
   unsigned long now = millis();
   float dt = (now - lastPIDTime) / 1000.0; // Convert to seconds
   if (now - lastPIDTime < 2000) return; // Run PID at most every 200ms
@@ -196,7 +159,7 @@ void updatePID() {
     float newDuty = currentDutyCycle + step;
    
     newDuty = constrain(newDuty, 0, 255);
-    setFanSpeed(newDuty);
+    setFanSpeed_1(newDuty);
     integral = 0; // Reset integral
   } else {
     // ignore small errors
@@ -213,181 +176,13 @@ void updatePID() {
     float newDuty = currentDutyCycle + output;
     newDuty = constrain(newDuty, 0, 255);
     
-    setFanSpeed(newDuty);
+    setFanSpeed_1(newDuty);
     lastError = error;
   }
   
   lastPIDTime = now;
 }
 
-void startAutoTune() {
-  if (autoTuneRunning) return;
-  
-  Serial.println("[AUTO-TUNE] Starting calibration...");
-  Serial.println("[AUTO-TUNE] Make sure fan can spin freely!");
-  
-  autoTuneRunning = true;
-  autoTuneStartTime = millis();
-  autoTuneLastUpdate = millis();
-  autoTuneState = 0;
-  autoTuneMaxRPM = 0;
-  autoTuneMinRPM = 9999;
-  autoTuneLastRPM = 0;
-  autoTuneLastCrossTime = 0;
-  autoTuneCrossCount = 0;
-  autoTunePeriodSum = 0;
-  autoTuneAmplitudeSum = 0;
-  autoTuneSetpoint = 900; // Target RPM for tuning
-  autoTuneOutput = 200;     // Start with higher duty cycle
-  autoTuneOutputHigh = true;
-  // Declare static variable for toggle timing
-  static unsigned long autoTuneLastToggle = 0;
-  autoTuneLastToggle = millis();
-  // Set initial output
-  setFanSpeed(autoTuneOutput);
-  targetRPM = 0; // Disable normal PID during auto-tune
-}
-
-void updateAutoTune() {
-  if (!autoTuneRunning) return;
-  
-  unsigned long now = millis();
-  float currentRPM = readRPM(); // Use raw RPM for crossing detection
-  
-  // Update min/max RPM tracking
-  if (currentRPM > autoTuneMaxRPM) autoTuneMaxRPM = currentRPM;
-  if (currentRPM < autoTuneMinRPM && currentRPM > 100) autoTuneMinRPM = currentRPM;
-  
-  // Detect zero crossings for oscillation analysis (use filtered RPM)
-  if (autoTuneLastCrossTime > 0 && 
-      ((autoTuneLastRPM < autoTuneSetpoint && currentRPM >= autoTuneSetpoint) ||
-       (autoTuneLastRPM > autoTuneSetpoint && currentRPM <= autoTuneSetpoint))) {
-    unsigned long period = now - autoTuneLastCrossTime;
-    autoTuneLastCrossTime = now;
-    autoTuneCrossCount++;
-    if (autoTuneCrossCount >= 2) {
-      float amplitude = (autoTuneMaxRPM - autoTuneMinRPM) / 2.0;
-      autoTunePeriodSum += period;
-      autoTuneAmplitudeSum += amplitude;
-      // Reset min/max for next cycle
-      autoTuneMaxRPM = currentRPM;
-      autoTuneMinRPM = currentRPM;
-    }
-  } else if (autoTuneLastCrossTime == 0) {
-    autoTuneLastCrossTime = now;
-  }
-  
-  autoTuneLastRPM = currentRPM;
-  
-  // State machine for auto-tune process
-  // Toggle output every 12 seconds for slow fans
-  static unsigned long autoTuneLastToggle = 0;
-  switch (autoTuneState) {
-    case 0: // Initial ramp-up and oscillation detection
-      if (now - autoTuneLastToggle > 12000) { // Wait 12 seconds for oscillations to develop
-        autoTuneOutput = autoTuneOutputHigh ? 200 : 50;
-        autoTuneOutputHigh = !autoTuneOutputHigh;
-        setFanSpeed(autoTuneOutput);
-        autoTuneLastToggle = now;
-        Serial.print("[AUTO-TUNE] Output toggled. Duty: ");
-        Serial.println(autoTuneOutput);
-      }
-      if (autoTuneCrossCount >= 4) {
-        autoTuneState = 1;
-        Serial.println("[AUTO-TUNE] Oscillations detected, analyzing...");
-      }
-      break;
-    case 1: // Analysis phase - collect data for several cycles
-      if (autoTuneCrossCount >= 8) { // Collect data from several cycles
-        finishAutoTune();
-      }
-      break;
-  }
-  // Print RPM and setpoint every second for debugging
-  static unsigned long lastDebugPrint = 0;
-  if (now - lastDebugPrint > 1000) {
-    Serial.print("[AUTO-TUNE] RPM: ");
-    Serial.print(currentRPM);
-    Serial.print(" | Setpoint: ");
-    Serial.print(autoTuneSetpoint);
-    Serial.print(" | Duty: ");
-    Serial.println(autoTuneOutput);
-    lastDebugPrint = now;
-  }
-  
-  // Safety timeout
-  if (now - autoTuneStartTime > 30000) { // 30 second timeout
-    Serial.println("[AUTO-TUNE] Timeout - could not find stable oscillations");
-    autoTuneRunning = false;
-    setFanSpeed(0);
-  }
-  
-  // Print progress every 2 seconds
-  if (now - lastAutoTuneUpdate > 2000) {
-    Serial.print("[AUTO-TUNE] Progress: ");
-    Serial.print(autoTuneCrossCount);
-    Serial.print(" crosses, RPM: ");
-    Serial.print(currentRPM);
-    Serial.print(", Output: ");
-    Serial.print(autoTuneOutput);
-    Serial.print("%, Range: ");
-    Serial.print(autoTuneMinRPM);
-    Serial.print("-");
-    Serial.println(autoTuneMaxRPM);
-    lastAutoTuneUpdate = now;
-  }
-}
-
-void finishAutoTune() {
-  if (autoTuneCrossCount < 4) {
-    Serial.println("[AUTO-TUNE] Insufficient data for tuning");
-    autoTuneRunning = false;
-    return;
-  }
-  
-  // Calculate average period and amplitude
-  float avgPeriod = autoTunePeriodSum / (autoTuneCrossCount - 1);
-  float avgAmplitude = autoTuneAmplitudeSum / (autoTuneCrossCount - 1);
-  
-  // Convert period from ms to seconds
-  float Tu = avgPeriod / 1000.0; // Ultimate period in seconds
-  
-  // Calculate ultimate gain (Ku) - Ziegler-Nichols method
-  // Ku = 4 * d / (π * a) where d is output amplitude, a is process amplitude
-  float outputAmplitude = 20.0; // We're switching between ±20% from center
-  float Ku = (4.0 * outputAmplitude) / (3.14159 * avgAmplitude);
-  
-  // Ziegler-Nichols tuning rules for PID
-  Kp = 0.6 * Ku;
-  Ki = 1.2 * Ku / Tu;
-  Kd = 0.075 * Ku * Tu;
-  
-  // Apply safety limits
-  Kp = constrain(Kp, 0.1, 2.0);
-  Ki = constrain(Ki, 0.01, 1.0);
-  Kd = constrain(Kd, 0.001, 0.1);
-  
-  Serial.println("[AUTO-TUNE] Complete!");
-  Serial.print("[AUTO-TUNE] Ku: ");
-  Serial.print(Ku, 4);
-  Serial.print(", Tu: ");
-  Serial.print(Tu, 4);
-  Serial.println("s");
-  Serial.print("[AUTO-TUNE] New PID values - Kp: ");
-  Serial.print(Kp, 4);
-  Serial.print(", Ki: ");
-  Serial.print(Ki, 4);
-  Serial.print(", Kd: ");
-  Serial.println(Kd, 4);
-  Serial.println("[AUTO-TUNE] Use these values or fine-tune manually");
-  
-  autoTuneRunning = false;
-  setFanSpeed(0);
-  
-  // Reset PID state
-  integral = 0;
-  lastError = 0;
-}
 
 float estimateAirflow(int rpm) {
   if (rpm <= rpmPoints[0]) return airflowPoints[0];
@@ -406,22 +201,19 @@ void loop(void) {
   unsigned long now = millis();
   
   // Read RPM more frequently
-  float currentRPM = readRPM();
+  float currentRPM = readRPM_1();
   
 
   rpmFiltered = MovingAvgRPM(currentRPM);
   
-  // Handle auto-tune or normal PID
-  if (autoTuneRunning) {
-    updateAutoTune();
-  } else if (targetRPM > 0) {
+if (targetRPM > 0) {
     // Wait for RPM to stabilize for at least 10 seconds before PID control
     if (!pidStableReady) {
       if (pidStableStart == 0) pidStableStart = millis();
       if (millis() - pidStableStart >= 10000) pidStableReady = true;
     }
     if (pidStableReady) {
-      updatePID();
+      updatePID_1();
       pidStableReady = false; // Reset until next stabilization period
       pidStableStart = millis(); // Restart stabilization timer
     }
@@ -433,15 +225,7 @@ void loop(void) {
   
   // Print status every second
   if (now - lastPrintMillis >= 1000) {
-    if (autoTuneRunning) {
-      Serial.print("[AUTO-TUNE] Running... Crosses: ");
-      Serial.print(autoTuneCrossCount);
-      Serial.print(", RPM: ");
-      Serial.print(rpmFiltered, 1);
-      Serial.print(", Output: ");
-      Serial.print(autoTuneOutput);
-      Serial.println("%");
-    } else {
+  
       Serial.print("RPM: ");
       Serial.print(rpmFiltered, 1);
       Serial.print(" | Duty: ");
@@ -456,13 +240,13 @@ void loop(void) {
       Serial.print(Ki, 3);
       Serial.print(",");
       Serial.print(Kd, 3);
-      Serial.println(" rpm");
+      Serial.print(", ");
       
       float airflow = estimateAirflow((int)rpmFiltered);
       Serial.print("Airflow: ");
       Serial.print(airflow);
       Serial.println(" m³/h");
-    }
+    
     lastPrintMillis = now;
   }
 
@@ -486,7 +270,7 @@ void loop(void) {
         }
       }
       currentDutyCycle = initialDuty;
-      setFanSpeed(initialDuty);
+      setFanSpeed_1(initialDuty);
       Serial.print("[CMD] Target RPM set to: ");
       Serial.println(targetRPM);
     } else if (line.startsWith("P")) {
@@ -501,13 +285,12 @@ void loop(void) {
       Kd = line.substring(1).toFloat();
       Serial.print("[CMD] Kd set to: ");
       Serial.println(Kd);
-    } else if (line.startsWith("T")) {
-      startAutoTune();
+
     } else {
       int input = line.toInt();
       targetRPM = 0; // Disable PID control
       
-      setFanSpeed(constrain(input, 0, 255));
+      setFanSpeed_1(constrain(input, 0, 255));
     }
   }
   
