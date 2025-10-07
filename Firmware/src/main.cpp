@@ -21,6 +21,8 @@
  *   P0.2     - Set Kp to 0.2
  *   I0.05    - Set Ki to 0.05
  *   D0.02    - Set Kd to 0.02
+ *   T#ON     - Enable temperature-based back fan control
+ *   T#OFF    - Disable temperature-based back fan control
  *
  * PID Tuning Tips:
  *   - Increase Kp for faster response (may cause oscillation)
@@ -410,61 +412,42 @@ void checkPID(uint8_t group)
 
 void PrintStatus()
 {
-  // Print status every second
-
-  Serial.print("SIDE: ");
-  Serial.print("RPM: ");
-  Serial.print(rpmFilteredSide, 1);
-  Serial.print(" | Duty: ");
-  Serial.print(currentDutySide, 1);
-  Serial.print(" | Target: ");
-  Serial.print(targetRPM_SIDE, 1);
-  Serial.print(" | Error: ");
-  Serial.print(targetRPM_SIDE - rpmFilteredSide, 1);
-  Serial.print(" | PID: ");
+  // Optimized status output for master C# program parsing
+  Serial.print("SIDE,");
+  Serial.print(rpmFilteredSide, 1); // RPM
+  Serial.print(",");
+  Serial.print(currentDutySide, 1); // Duty
+  Serial.print(",");
+  Serial.print(targetRPM_SIDE, 1); // Target
+  Serial.print(",");
+  Serial.print(targetRPM_SIDE - rpmFilteredSide, 1); // Error
+  Serial.print(",");
   Serial.print(Kp, 3);
   Serial.print(",");
   Serial.print(Ki, 3);
   Serial.print(",");
   Serial.print(Kd, 3);
-  Serial.print(" | Airflow: ");
-  Serial.print(estimateAirflow((int)rpmFilteredSide));
-  Serial.println(" m³/h");
+  Serial.print(",");
+  Serial.print(estimateAirflow((int)rpmFilteredSide), 2);
+  Serial.println();
 
-  Serial.print("BACK: ");
-  Serial.print("RPM: ");
-  Serial.print(rpmFilteredBack, 1);
-  Serial.print(" | Duty: ");
-  Serial.print(currentDutyBack, 1);
-  Serial.print(" | Target: ");
-  Serial.print(targetRPM_BACK, 1);
-  Serial.print(" | Error: ");
-  Serial.print(targetRPM_BACK - rpmFilteredBack, 1);
-  Serial.print(" | PID: ");
+  Serial.print("BACK,");
+  Serial.print(rpmFilteredBack, 1); // RPM
+  Serial.print(",");
+  Serial.print(currentDutyBack, 1); // Duty
+  Serial.print(",");
+  Serial.print(targetRPM_BACK, 1); // Target
+  Serial.print(",");
+  Serial.print(targetRPM_BACK - rpmFilteredBack, 1); // Error
+  Serial.print(",");
   Serial.print(Kp, 3);
   Serial.print(",");
   Serial.print(Ki, 3);
   Serial.print(",");
   Serial.print(Kd, 3);
-  Serial.print(" | Airflow: ");
-  Serial.print(estimateAirflow((int)rpmFilteredBack));
-  Serial.println(" m³/h");
-
-  Serial.print("OUT: T = ");
-  Serial.print(bmeOutdoor.readTemperature());
-  Serial.print(" °C, H = ");
-  Serial.print(bmeOutdoor.readHumidity());
-  Serial.print(" %, P = ");
-  Serial.print(bmeOutdoor.readPressure() / 100.0F);
-  Serial.println(" hPa");
-
-  Serial.print("MIRROR: T = ");
-  Serial.print(bmeMirror.readTemperature());
-  Serial.print(" °C, H = ");
-  Serial.print(bmeMirror.readHumidity());
-  Serial.print(" %, P = ");
-  Serial.print(bmeMirror.readPressure() / 100.0F);
-  Serial.println(" hPa");
+  Serial.print(",");
+  Serial.print(estimateAirflow((int)rpmFilteredBack), 2);
+  Serial.println();
 }
 
 // Add temperature-based fan control logic
@@ -507,12 +490,39 @@ void loop(void)
       int backDuty = (int)getBackFanDutyFromTemps(mirrorTemp, outdoorTemp);
       setFanSpeed(backDuty, BACK);
       targetRPM_BACK = 0; // Disable PID control when temp compensation is active
-      Serial.print("[TEMP] Mirror: ");
-      Serial.print(mirrorTemp);
-      Serial.print(" °C, Outdoor: ");
-      Serial.print(outdoorTemp);
-      Serial.print(" °C, Back Fan Duty: ");
+
+      Serial.print("TEMP,ON,");
+      Serial.print(mirrorTemp, 2);
+      Serial.print(",");
+      Serial.print(bmeMirror.readHumidity(), 2);
+      Serial.print(",");
+      Serial.print(bmeMirror.readPressure() / 100.0F, 2);
+      Serial.print(",");
+      Serial.print(outdoorTemp, 2);
+      Serial.print(",");
+      Serial.print(bmeOutdoor.readHumidity(), 2);
+      Serial.print(",");
+      Serial.print(bmeOutdoor.readPressure() / 100.0F, 2);
+      Serial.print(",");
       Serial.println(backDuty);
+    } else {
+      // If temp compensation is disabled, just print temps without changing fan speed
+      float outdoorTemp = bmeOutdoor.readTemperature();
+      float mirrorTemp = bmeMirror.readTemperature();
+
+      Serial.print("TEMP,OFF,");
+      Serial.print(mirrorTemp, 2);
+      Serial.print(",");
+      Serial.print(bmeMirror.readHumidity(), 2);
+      Serial.print(",");
+      Serial.print(bmeMirror.readPressure() / 100.0F, 2);
+      Serial.print(",");
+      Serial.print(outdoorTemp, 2);
+      Serial.print(",");
+      Serial.print(bmeOutdoor.readHumidity(), 2);
+      Serial.print(",");
+      Serial.print(bmeOutdoor.readPressure() / 100.0F, 2);
+      Serial.println(",N/A");
 
     }
 
