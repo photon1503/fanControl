@@ -1,17 +1,37 @@
-
 /*
-Use serial commands to tune:
+ * Fan Controller Firmware for Arduino Nano (ATmega328)
+ * ----------------------------------------------------
+ * Features:
+ *   - Supports two 4-pin PWM fan groups (SIDE and BACK)
+ *   - Closed-loop RPM control with PID algorithm
+ *   - Serial command interface for tuning and control
+ *   - Moving average RPM filtering for stability
+ *   - Lookup tables for PWM/RPM/airflow mapping
+ *   - Independent duty cycle and RPM tracking per group
+ *
+ * Serial Commands:
+ *   R1#900   - Set target RPM for SIDE fan to 900
+ *   R2#1200  - Set target RPM for BACK fan to 1200
+ *   S1#100   - Set duty cycle for SIDE fan to 100 (disables PID)
+ *   S2#150   - Set duty cycle for BACK fan to 150 (disables PID)
+ *   P0.2     - Set Kp to 0.2
+ *   I0.05    - Set Ki to 0.05
+ *   D0.02    - Set Kd to 0.02
+ *
+ * PID Tuning Tips:
+ *   - Increase Kp for faster response (may cause oscillation)
+ *   - Increase Ki to eliminate steady-state error
+ *   - Increase Kd to reduce overshoot
+ *
+ * Hardware:
+ *   - Arduino Nano (ATmega328)
+ *   - 4-pin PWM fans (SIDE: Pin 9, BACK: Pin 10)
+ *   - Tachometer inputs (SIDE: Pin 2, BACK: Pin 3)
+ *
+ * Author: Gerald Hitz
+ * Date: 2025-10-07
+ */
 
-P0.2 - set Kp to 0.2
-I0.05 - set Ki to 0.05
-D0.02 - set Kd to 0.02
-
-
-Increase Kp for faster response (but may cause oscillation)
-Increase Ki to eliminate steady-state error
-Increase Kd to reduce overshoot
-
-*/
 #include <Arduino.h>
 
 void tachISR_SIDE();
@@ -30,7 +50,8 @@ bool pidStableReady = false;
 #define RPM_FILTER_SIZE 10
 float rpmFilterBuffer[RPM_FILTER_SIZE] = {0};
 int rpmFilterIndex = 0;
-float rpmFiltered = 0;
+float rpmFilteredBack = 0;
+float rpmFilteredSide = 0;
 
 // PID controller variables
 float targetRPM_BACK = 0;
@@ -45,12 +66,12 @@ float Ki = 0.01;  // Lower integral gain
 float Kd = 0.005; // Lower derivative gain
 
 // Group 1 (Side)
-#define TACH_PIN_1 2
-#define PWM_PIN_1 9 // Use Pin 9 (Timer 1)
+#define TACH_PIN_SIDE 2
+#define PWM_PIN_SIDE 9 // Use Pin 9 (Timer 1)
 
 // Group 2 (Back)
-#define TACH_PIN_2 3
-#define PWM_PIN_2 10 // Use Pin 10 (Timer 1)
+#define TACH_PIN_BACK 3
+#define PWM_PIN_BACK 10 // Use Pin 10 (Timer 1)
 
 // Fan groups
 #define BACK 2
@@ -75,18 +96,19 @@ void setup(void)
   Serial.begin(115200);
   Serial.println("Fan Controller");
 
-  pinMode(PWM_PIN_1, OUTPUT);
-  pinMode(PWM_PIN_2, OUTPUT);
   // Set Timer 1 to 25kHz PWM for 4-pin fans (pin 9/10)
   TCCR1A = _BV(COM1A1) | _BV(COM1B1) | _BV(WGM11);
   TCCR1B = _BV(WGM13) | _BV(CS10);
   ICR1 = 320; // 25kHz
 
-  pinMode(TACH_PIN_1, INPUT_PULLUP);
-  pinMode(TACH_PIN_2, INPUT_PULLUP);
+  pinMode(PWM_PIN_SIDE, OUTPUT);
+  pinMode(PWM_PIN_BACK, OUTPUT);
 
-  attachInterrupt(digitalPinToInterrupt(TACH_PIN_1), tachISR_SIDE, FALLING);
-  attachInterrupt(digitalPinToInterrupt(TACH_PIN_2), tachISR_BACK, FALLING);
+  pinMode(TACH_PIN_SIDE, INPUT_PULLUP);
+  pinMode(TACH_PIN_BACK, INPUT_PULLUP);
+
+  attachInterrupt(digitalPinToInterrupt(TACH_PIN_SIDE), tachISR_SIDE, FALLING);
+  attachInterrupt(digitalPinToInterrupt(TACH_PIN_BACK), tachISR_BACK, FALLING);
 
   lastRpmTime = millis();
   lastPIDTime = millis();
@@ -108,20 +130,33 @@ void tachISR_BACK()
   pulseCountBack++;
 }
 
-float MovingAvgRPM(float newRPM)
+float MovingAvgRPM(float newRPM, uint8_t group)
 {
   static const int size = 10;
-  static float buffer[size] = {0};
-  static int index = 0;
-  static float sum = 0;
+  static float bufferSide[size] = {0};
+  static int indexSide = 0;
+  static float sumSide = 0;
+  static float bufferBack[size] = {0};
+  static int indexBack = 0;
+  static float sumBack = 0;
 
-  sum -= buffer[index];
-  buffer[index] = newRPM;
-  sum += newRPM;
-
-  index = (index + 1) % size;
-
-  return sum / size;
+  if (group == SIDE)
+  {
+    sumSide -= bufferSide[indexSide];
+    bufferSide[indexSide] = newRPM;
+    sumSide += newRPM;
+    indexSide = (indexSide + 1) % size;
+    return sumSide / size;
+  }
+  else if (group == BACK)
+  {
+    sumBack -= bufferBack[indexBack];
+    bufferBack[indexBack] = newRPM;
+    sumBack += newRPM;
+    indexBack = (indexBack + 1) % size;
+    return sumBack / size;
+  }
+  return newRPM;
 }
 
 float readRPM(uint8_t group)
@@ -141,48 +176,48 @@ float readRPM(uint8_t group)
   if (group == SIDE)
   {
     timeDiff = currentTime - lastCalcTimeSide;
-    if (timeDiff < 1000)
-    {
-      return lastRPM_Side;
-    }
     noInterrupts();
     pulses = pulseCountSide - lastPulseCountSide;
-    lastPulseCountSide = pulseCountSide;
     interrupts();
-    if (timeDiff > 0 && pulses > 0)
+    if (timeDiff >= 1000 && pulses > 0)
     {
       rpm = (pulses * 60000.0) / (2.0 * timeDiff);
+      lastRPM_Side = rpm;
+      lastPulseCountSide = pulseCountSide;
+      lastCalcTimeSide = currentTime;
+      return rpm;
     }
-    else
+    else if (timeDiff >= 1000)
     {
-      rpm = 0;
+      lastRPM_Side = 0;
+      lastPulseCountSide = pulseCountSide;
+      lastCalcTimeSide = currentTime;
+      return 0;
     }
-    lastCalcTimeSide = currentTime;
-    lastRPM_Side = rpm;
-    return rpm;
+    return lastRPM_Side;
   }
   else if (group == BACK)
   {
     timeDiff = currentTime - lastCalcTimeBack;
-    if (timeDiff < 1000)
-    {
-      return lastRPM_Back;
-    }
     noInterrupts();
     pulses = pulseCountBack - lastPulseCountBack;
-    lastPulseCountBack = pulseCountBack;
     interrupts();
-    if (timeDiff > 0 && pulses > 0)
+    if (timeDiff >= 1000 && pulses > 0)
     {
       rpm = (pulses * 60000.0) / (2.0 * timeDiff);
+      lastRPM_Back = rpm;
+      lastPulseCountBack = pulseCountBack;
+      lastCalcTimeBack = currentTime;
+      return rpm;
     }
-    else
+    else if (timeDiff >= 1000)
     {
-      rpm = 0;
+      lastRPM_Back = 0;
+      lastPulseCountBack = pulseCountBack;
+      lastCalcTimeBack = currentTime;
+      return 0;
     }
-    lastCalcTimeBack = currentTime;
-    lastRPM_Back = rpm;
-    return rpm;
+    return lastRPM_Back;
   }
   return 0;
 }
@@ -191,12 +226,12 @@ void setFanSpeed(float dutyCycle, uint8_t group)
 {
   if (group == SIDE)
   {
-    analogWrite(PWM_PIN_1, (uint8_t)dutyCycle);
+    analogWrite(PWM_PIN_SIDE, (uint8_t)dutyCycle);
     currentDutySide = dutyCycle;
   }
   else if (group == BACK)
   {
-    analogWrite(PWM_PIN_2, (uint8_t)dutyCycle);
+    analogWrite(PWM_PIN_BACK, (uint8_t)dutyCycle);
     currentDutyBack = dutyCycle;
   }
 }
@@ -208,12 +243,13 @@ void updatePID(uint8_t group)
   if (now - lastPIDTime < 2000)
     return; // Run PID at most every 200ms
 
-  float currentRPM = rpmFiltered;
-  float error = targetRPM_BACK - currentRPM;
+  float currentRPM = (group == SIDE) ? rpmFilteredSide : rpmFilteredBack;
+  float targetRPM = (group == SIDE) ? targetRPM_SIDE : targetRPM_BACK;
+  float error = targetRPM - currentRPM;
 
   // Only use PID if we're reasonably close to target
   int currentDuty = (group == SIDE) ? currentDutySide : currentDutyBack;
-  if (targetRPM_BACK > 100 && abs(error) > 50)
+  if (targetRPM > 100 && abs(error) > 50)
   {
     // Large error - use more aggressive approach
     float step = (error > 0 ? 4 : -4); // Lower step for large error
@@ -265,12 +301,21 @@ float estimateAirflow(int rpm)
 
 void checkPID(uint8_t group)
 {
+  // Read RPM more frequently
+  if (group == BACK)
+  {
+    float currentRPM = readRPM(group);
+    rpmFilteredBack = MovingAvgRPM(currentRPM, BACK);
+  }
+
+  if (group == SIDE)
+  {
+    float currentRPM = readRPM(group);
+    rpmFilteredSide = MovingAvgRPM(currentRPM, SIDE);
+  }
+
   if (group == BACK && targetRPM_BACK > 0)
   {
-    // Read RPM more frequently
-    float currentRPM = readRPM(group);
-
-    rpmFiltered = MovingAvgRPM(currentRPM);
 
     if (targetRPM_BACK > 0)
     {
@@ -296,36 +341,80 @@ void checkPID(uint8_t group)
       pidStableReady = false;
     }
   }
+  else if (group == SIDE && targetRPM_SIDE > 0)
+  {
+
+    static unsigned long pidStableStartSide = 0;
+    static bool pidStableReadySide = false;
+
+    if (targetRPM_SIDE > 0)
+    {
+      // Wait for RPM to stabilize for at least 10 seconds before PID control
+      if (!pidStableReadySide)
+      {
+        if (pidStableStartSide == 0)
+          pidStableStartSide = millis();
+        if (millis() - pidStableStartSide >= 10000)
+          pidStableReadySide = true;
+      }
+      if (pidStableReadySide)
+      {
+        updatePID(SIDE);
+        pidStableReadySide = false;    // Reset until next stabilization period
+        pidStableStartSide = millis(); // Restart stabilization timer
+      }
+    }
+    else
+    {
+      // Reset stabilization timer if PID is not active
+      pidStableStartSide = 0;
+      pidStableReadySide = false;
+    }
+  }
 }
 
 void PrintStatus()
 {
   // Print status every second
 
+  Serial.print("SIDE: ");
   Serial.print("RPM: ");
-  Serial.print(rpmFiltered, 1);
-  Serial.print(" | Duty Side: ");
+  Serial.print(rpmFilteredSide, 1);
+  Serial.print(" | Duty: ");
   Serial.print(currentDutySide, 1);
-  Serial.print(" | Duty Back: ");
-  Serial.print(currentDutyBack, 1);
   Serial.print(" | Target: ");
-  Serial.print(targetRPM_BACK, 1);
+  Serial.print(targetRPM_SIDE, 1);
   Serial.print(" | Error: ");
-  Serial.print(targetRPM_BACK - rpmFiltered, 1);
+  Serial.print(targetRPM_SIDE - rpmFilteredSide, 1);
   Serial.print(" | PID: ");
   Serial.print(Kp, 3);
   Serial.print(",");
   Serial.print(Ki, 3);
   Serial.print(",");
   Serial.print(Kd, 3);
-  Serial.print(", ");
+  Serial.print(" | Airflow: ");
+  Serial.print(estimateAirflow((int)rpmFilteredSide));
+  Serial.println(" m³/h");
 
-  float airflow = estimateAirflow((int)rpmFiltered);
-  Serial.print("Airflow: ");
-  Serial.print(airflow);
+  Serial.print("BACK: ");
+  Serial.print("RPM: ");
+  Serial.print(rpmFilteredBack, 1);
+  Serial.print(" | Duty: ");
+  Serial.print(currentDutyBack, 1);
+  Serial.print(" | Target: ");
+  Serial.print(targetRPM_BACK, 1);
+  Serial.print(" | Error: ");
+  Serial.print(targetRPM_BACK - rpmFilteredBack, 1);
+  Serial.print(" | PID: ");
+  Serial.print(Kp, 3);
+  Serial.print(",");
+  Serial.print(Ki, 3);
+  Serial.print(",");
+  Serial.print(Kd, 3);
+  Serial.print(" | Airflow: ");
+  Serial.print(estimateAirflow((int)rpmFilteredBack));
   Serial.println(" m³/h");
 }
-
 
 void loop(void)
 {
@@ -336,7 +425,7 @@ void loop(void)
     PrintStatus();
     lastPrintMillis = now;
   }
-  
+
   checkPID(BACK);
   checkPID(SIDE);
 
@@ -400,12 +489,16 @@ void loop(void)
       int duty = line.substring(line.indexOf('#') + 1).toInt();
       int groupId = (group == 1) ? SIDE : BACK;
 
-      targetRPM_BACK = 0; // Disable PID control
-
       if (groupId == SIDE)
+      {
+        targetRPM_SIDE = 0; // Disable PID control
         setFanSpeed(constrain(duty, 0, 255), SIDE);
+      }
       else if (groupId == BACK)
+      {
+        targetRPM_BACK = 0; // Disable PID control
         setFanSpeed(constrain(duty, 0, 255), BACK);
+      }
     }
   }
 
