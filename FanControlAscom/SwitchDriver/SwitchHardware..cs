@@ -612,19 +612,19 @@ namespace ASCOM.FanControl.Switch
             {
                 case 0: return "Side PWM";
                 case 1: return "Side RPM";
-                case 2: return "Back PWM";
-                case 3: return "Back RPM";
-                case 4: return "Back Auto";
+                case 2: return "Rear PWM";
+                case 3: return "Rear RPM";
+                case 4: return "Rear Auto";
                 case 5: return "Mirror Temp";
                 case 6: return "Mirror Hum";
                 case 7: return "Mirror Press";
                 case 8: return "Outside Temp";
                 case 9: return "Outside Hum";
                 case 10: return "Outside Press";
-                case 11: return "Set RPM Side";
-                case 12: return "Set RPM Back";
-                case 13: return "Set PWM Side";
-                case 14: return "Set PWM Back";
+                case 11: return "Target RPM Side";
+                case 12: return "Target RPM Back";
+                case 13: return "Target PWM Side";
+                case 14: return "Target PWM Back";
 
                 default:
                     LogMessage("GetSwitchName", $"GetSwitchName({id}) - Invalid switch ID");
@@ -659,9 +659,9 @@ namespace ASCOM.FanControl.Switch
             {
                 case 0: return "Side fan PWM value (0-255)";
                 case 1: return "Side fan RPM ";
-                case 2: return "Back fan PWM value (0-255)";
-                case 3: return "Back fan RPM ";
-                case 4: return "Back fan auto mode (true/false)";
+                case 2: return "Rear fan PWM value (0-255)";
+                case 3: return "Rear fan RPM ";
+                case 4: return "Rear fan auto mode (true/false)";
                 case 5: return "Mirror temperature (C)";
                 case 6: return "Mirror humidity (%)";
                 case 7: return "Mirror pressure (hPa)";
@@ -669,9 +669,9 @@ namespace ASCOM.FanControl.Switch
                 case 9: return "Outside humidity (%)";
                 case 10: return "Outside pressure (hPa)";
                 case 11: return "Set Side fan target RPM (0 for off)";
-                case 12: return "Set Back fan target RPM (0 for off)";
+                case 12: return "Set rear fan target RPM (0 for off)";
                 case 13: return "Set Side fan PWM value (0-255)";
-                case 14: return "Set Back fan PWM value (0-255)";
+                case 14: return "Set rear fan PWM value (0-255)";
                 default:
                     LogMessage("GetSwitchDescription", $"GetSwitchDescription({id}) - Invalid switch ID");
                     throw new ASCOM.InvalidValueException($"GetSwitchDescription({id}) - Invalid switch ID");
@@ -1185,7 +1185,7 @@ TEMP,OFF,23.30,40.29,1005.56,23.02,40.50,1006.61,N/A
 
                                 CurrentSideRPM = tsideRpm;
                                 CurrentSidePWM = tsideDuty;
-                                sideTargetRPM = tsideTarget;
+                                // sideTargetRPM = tsideTarget;
                             }
                             break;
 
@@ -1198,7 +1198,7 @@ TEMP,OFF,23.30,40.29,1005.56,23.02,40.50,1006.61,N/A
 
                                 CurrentBackRPM = tbackRpm;
                                 CurrenBackPWM = tbackDuty;
-                                backTargetRPM = tbackTarget;
+                                //  backTargetRPM = tbackTarget;
                             }
                             break;
 
