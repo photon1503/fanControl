@@ -199,6 +199,8 @@ void updatePID() {
     setFanSpeed(newDuty);
     integral = 0; // Reset integral
   } else {
+    // ignore small errors
+    if (abs(error) < 20) error = 0;
     // Normal PID control
     integral += error * dt;
     // Anti-windup: limit integral term
@@ -206,7 +208,7 @@ void updatePID() {
     float derivative = (error - lastError) / dt;
     float output = Kp * error + Ki * integral + Kd * derivative;
     // Limit output change rate
-    float maxChange = 2.0; // Max 2% change per cycle
+    float maxChange = 1.0; // Max 1% change per cycle
     output = constrain(output, -maxChange, maxChange);
     float newDuty = currentDutyCycle + output;
     newDuty = constrain(newDuty, 0, 255);
@@ -236,9 +238,11 @@ void startAutoTune() {
   autoTunePeriodSum = 0;
   autoTuneAmplitudeSum = 0;
   autoTuneSetpoint = 900; // Target RPM for tuning
-  autoTuneOutput = 128;     // Start with 50% duty cycle
+  autoTuneOutput = 200;     // Start with higher duty cycle
   autoTuneOutputHigh = true;
-  
+  // Declare static variable for toggle timing
+  static unsigned long autoTuneLastToggle = 0;
+  autoTuneLastToggle = millis();
   // Set initial output
   setFanSpeed(autoTuneOutput);
   targetRPM = 0; // Disable normal PID during auto-tune
@@ -248,7 +252,7 @@ void updateAutoTune() {
   if (!autoTuneRunning) return;
   
   unsigned long now = millis();
-  float currentRPM = rpmFiltered;
+  float currentRPM = readRPM(); // Use raw RPM for crossing detection
   
   // Update min/max RPM tracking
   if (currentRPM > autoTuneMaxRPM) autoTuneMaxRPM = currentRPM;
@@ -276,29 +280,39 @@ void updateAutoTune() {
   autoTuneLastRPM = currentRPM;
   
   // State machine for auto-tune process
+  // Toggle output every 12 seconds for slow fans
+  static unsigned long autoTuneLastToggle = 0;
   switch (autoTuneState) {
     case 0: // Initial ramp-up and oscillation detection
-      if (now - autoTuneStartTime > 5000) { // Wait 5 seconds for oscillations to develop
-        if (autoTuneCrossCount >= 4) {
-          autoTuneState = 1;
-          Serial.println("[AUTO-TUNE] Oscillations detected, analyzing...");
-        } else {
-          // No oscillations detected, try different output
-          autoTuneOutput = autoTuneOutputHigh ? 179 : 77;
-          autoTuneOutputHigh = !autoTuneOutputHigh;
-          setFanSpeed(autoTuneOutput);
-          autoTuneStartTime = now;
-          autoTuneCrossCount = 0;
-          Serial.println("[AUTO-TUNE] Adjusting output to induce oscillations...");
-        }
+      if (now - autoTuneLastToggle > 12000) { // Wait 12 seconds for oscillations to develop
+        autoTuneOutput = autoTuneOutputHigh ? 200 : 50;
+        autoTuneOutputHigh = !autoTuneOutputHigh;
+        setFanSpeed(autoTuneOutput);
+        autoTuneLastToggle = now;
+        Serial.print("[AUTO-TUNE] Output toggled. Duty: ");
+        Serial.println(autoTuneOutput);
+      }
+      if (autoTuneCrossCount >= 4) {
+        autoTuneState = 1;
+        Serial.println("[AUTO-TUNE] Oscillations detected, analyzing...");
       }
       break;
-      
     case 1: // Analysis phase - collect data for several cycles
       if (autoTuneCrossCount >= 8) { // Collect data from several cycles
         finishAutoTune();
       }
       break;
+  }
+  // Print RPM and setpoint every second for debugging
+  static unsigned long lastDebugPrint = 0;
+  if (now - lastDebugPrint > 1000) {
+    Serial.print("[AUTO-TUNE] RPM: ");
+    Serial.print(currentRPM);
+    Serial.print(" | Setpoint: ");
+    Serial.print(autoTuneSetpoint);
+    Serial.print(" | Duty: ");
+    Serial.println(autoTuneOutput);
+    lastDebugPrint = now;
   }
   
   // Safety timeout
