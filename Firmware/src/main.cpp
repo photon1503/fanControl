@@ -33,6 +33,14 @@
  */
 
 #include <Arduino.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+
+
+Adafruit_BME280 bmeOutdoor; // I2C
+Adafruit_BME280 bmeMirror;
 
 void tachISR_SIDE();
 void tachISR_BACK();
@@ -94,6 +102,7 @@ const float airflowPoints[] = {0, 4.1, 8.3, 12.4, 16.6, 24.9, 33.2, 38.2};
 void setup(void)
 {
   Serial.begin(115200);
+    while (!Serial);
   Serial.println("Fan Controller");
 
   // Set Timer 1 to 25kHz PWM for 4-pin fans (pin 9/10)
@@ -118,6 +127,21 @@ void setup(void)
   delay(500);
   setFanSpeed(0, SIDE);
   setFanSpeed(0, BACK);
+
+ delay(1000);
+  if (!bmeOutdoor.begin(0x76))  {
+    Serial.println("Could not find a valid BME280 Outdoor sensor, check wiring!");
+  } 
+  else {
+    Serial.println("BME280 Outoor sensor found!");
+  }
+
+    if (!bmeMirror.begin(0x77))  {
+    Serial.println("Could not find a valid BME280 Mirror sensor, check wiring!");
+  } 
+  else {
+    Serial.println("BME280 Mirror sensor found!");
+  }
 }
 
 void tachISR_SIDE()
@@ -414,6 +438,24 @@ void PrintStatus()
   Serial.print(" | Airflow: ");
   Serial.print(estimateAirflow((int)rpmFilteredBack));
   Serial.println(" m³/h");
+
+      Serial.print("OUT: T = ");
+  Serial.print(bmeOutdoor.readTemperature());
+  Serial.print(" °C, H = ");
+  Serial.print(bmeOutdoor.readHumidity());
+  Serial.print(" %, P = ");
+  Serial.print(bmeOutdoor.readPressure() / 100.0F);
+  Serial.println(" hPa");
+
+        Serial.print("MIRROR: T = ");
+  Serial.print(bmeMirror.readTemperature());
+  Serial.print(" °C, H = ");
+  Serial.print(bmeMirror.readHumidity());
+  Serial.print(" %, P = ");
+  Serial.print(bmeMirror.readPressure() / 100.0F);
+  Serial.println(" hPa");
+
+
 }
 
 void loop(void)
@@ -423,6 +465,7 @@ void loop(void)
   if (now - lastPrintMillis >= 1000)
   {
     PrintStatus();
+
     lastPrintMillis = now;
   }
 
