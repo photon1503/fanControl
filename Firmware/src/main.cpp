@@ -1,6 +1,4 @@
-// PID stabilization timer
-unsigned long pidStableStart = 0;
-bool pidStableReady = false;
+
 /*
 Use serial commands to tune:
 
@@ -16,13 +14,17 @@ Increase Kd to reduce overshoot
 */
 #include <Arduino.h>
 
-void tachISR();
+void tachISR_SIDE();
+void tachISR_BACK();
 float readRPM_1();
-void setFanSpeed_1(float dutyCycle);
-void updatePID_1();
+void setFanSpeed(float dutyCycle, uint8_t group);
+void updatePID(uint8_t group);
 float estimateAirflow(int rpm);
 
 
+// PID stabilization timer
+unsigned long pidStableStart = 0;
+bool pidStableReady = false;
 
 // RPM filtering variables
 // Use longer filter for slow fans
@@ -32,7 +34,8 @@ int rpmFilterIndex = 0;
 float rpmFiltered = 0;
 
 // PID controller variables
-float targetRPM = 0;
+float targetRPM_BACK = 0;
+float targetRPM_SIDE = 0;
 float integral = 0;
 float lastError = 0;
 unsigned long lastPIDTime = 0;
@@ -51,8 +54,13 @@ float Kd = 0.005;  // Lower derivative gain
 #define TACH_PIN_2 3
 #define PWM_PIN_2 10 // Use Pin 10 (Timer 1)
 
+// Fan groups
+#define BACK 2
+#define SIDE 1
+
 // RPM measurement variables
-volatile unsigned long pulseCount = 0;
+volatile unsigned long pulseCountSide = 0;
+volatile unsigned long pulseCountBack = 0;  
 unsigned long lastPulseTime = 0;
 unsigned long lastRpmTime = 0;
 float currentRPM = 0;
@@ -78,19 +86,25 @@ void setup(void) {
   pinMode(TACH_PIN_1, INPUT_PULLUP);
   pinMode(TACH_PIN_2, INPUT_PULLUP);
   
-  attachInterrupt(digitalPinToInterrupt(TACH_PIN_1), tachISR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(TACH_PIN_2), tachISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(TACH_PIN_1), tachISR_SIDE, FALLING);
+  attachInterrupt(digitalPinToInterrupt(TACH_PIN_2), tachISR_BACK, FALLING);
 
   lastRpmTime = millis();
   lastPIDTime = millis();
-  
-  setFanSpeed_1(100);
+
+  setFanSpeed(100, SIDE);
+  setFanSpeed(100, BACK);
   delay(500);
-  setFanSpeed_1(0);
+  setFanSpeed(0, SIDE);
+  setFanSpeed(0, BACK);
 }
 
-void tachISR() {
-  pulseCount++;
+void tachISR_SIDE() {
+  pulseCountSide++;
+}
+
+void tachISR_BACK() {
+  pulseCountBack  ++;
 }
 
 float MovingAvgRPM(float newRPM) {
@@ -123,8 +137,8 @@ float readRPM_1() {
   }
 
   noInterrupts();
-  unsigned long pulses = pulseCount - lastPulseCount;
-  lastPulseCount = pulseCount;
+  unsigned long pulses = pulseCountSide - lastPulseCount;
+  lastPulseCount = pulseCountSide;
   interrupts();
 
   if (timeDiff > 0 && pulses > 0) {
@@ -138,28 +152,31 @@ float readRPM_1() {
   return currentRPM;
 }
 
-void setFanSpeed_1(float dutyCycle) {
-
-    analogWrite(PWM_PIN_1, (uint8_t)dutyCycle);
+void setFanSpeed(float dutyCycle, uint8_t group) {
+    if (group == 1) {
+        analogWrite(PWM_PIN_1, (uint8_t)dutyCycle);
+    } else if (group == 2) {
+        analogWrite(PWM_PIN_2, (uint8_t)dutyCycle);
+    }
     currentDutyCycle = dutyCycle;
 }
 
-void updatePID_1() {
+void updatePID(uint8_t group) {
   unsigned long now = millis();
   float dt = (now - lastPIDTime) / 1000.0; // Convert to seconds
   if (now - lastPIDTime < 2000) return; // Run PID at most every 200ms
   
   float currentRPM = rpmFiltered;
-  float error = targetRPM - currentRPM;
+  float error = targetRPM_BACK - currentRPM;
   
   // Only use PID if we're reasonably close to target
-  if (targetRPM > 100 && abs(error) > 50) {
+  if (targetRPM_BACK > 100 && abs(error) > 50) {
     // Large error - use more aggressive approach
     float step = (error > 0 ? 4 : -4); // Lower step for large error
     float newDuty = currentDutyCycle + step;
    
     newDuty = constrain(newDuty, 0, 255);
-    setFanSpeed_1(newDuty);
+    setFanSpeed(newDuty, group);
     integral = 0; // Reset integral
   } else {
     // ignore small errors
@@ -175,8 +192,8 @@ void updatePID_1() {
     output = constrain(output, -maxChange, maxChange);
     float newDuty = currentDutyCycle + output;
     newDuty = constrain(newDuty, 0, 255);
-    
-    setFanSpeed_1(newDuty);
+
+    setFanSpeed(newDuty, group);
     lastError = error;
   }
   
@@ -206,14 +223,14 @@ void loop(void) {
 
   rpmFiltered = MovingAvgRPM(currentRPM);
   
-if (targetRPM > 0) {
+if (targetRPM_BACK > 0) {
     // Wait for RPM to stabilize for at least 10 seconds before PID control
     if (!pidStableReady) {
       if (pidStableStart == 0) pidStableStart = millis();
       if (millis() - pidStableStart >= 10000) pidStableReady = true;
     }
     if (pidStableReady) {
-      updatePID_1();
+      updatePID(BACK);
       pidStableReady = false; // Reset until next stabilization period
       pidStableStart = millis(); // Restart stabilization timer
     }
@@ -231,9 +248,9 @@ if (targetRPM > 0) {
       Serial.print(" | Duty: ");
       Serial.print(currentDutyCycle, 1);
       Serial.print("% | Target: ");
-      Serial.print(targetRPM, 1);
+      Serial.print(targetRPM_BACK, 1);
       Serial.print(" | Error: ");
-      Serial.print(targetRPM - rpmFiltered, 1);
+      Serial.print(targetRPM_BACK - rpmFiltered, 1);
       Serial.print(" | PID: ");
       Serial.print(Kp, 3);
       Serial.print(",");
@@ -251,48 +268,51 @@ if (targetRPM > 0) {
   }
 
   // Handle serial commands
-  if (Serial.available() > 0) {
-    String line = Serial.readStringUntil('\n');
-    line.trim();
-        
-    if (line.startsWith("R")) {
-      int rpm = line.substring(1).toInt();
-      targetRPM = constrain(rpm, 0, 3000);
-      integral = 0; // Reset integral when target changes
-      lastError = 0;
-      // Lookup initial duty cycle from table
-      int initialDuty = 0;
-      for (int i = 0; i < sizeof(rpmPoints)/sizeof(rpmPoints[0]) - 1; i++) {
-        if (targetRPM >= rpmPoints[i] && targetRPM <= rpmPoints[i+1]) {
-          float ratio = (float)(targetRPM - rpmPoints[i]) / (rpmPoints[i+1] - rpmPoints[i]);
-          initialDuty = pwmPoints[i] + ratio * (pwmPoints[i+1] - pwmPoints[i]);
-          break;
-        }
-      }
-      currentDutyCycle = initialDuty;
-      setFanSpeed_1(initialDuty);
-      Serial.print("[CMD] Target RPM set to: ");
-      Serial.println(targetRPM);
-    } else if (line.startsWith("P")) {
-      Kp = line.substring(1).toFloat();
-      Serial.print("[CMD] Kp set to: ");
-      Serial.println(Kp);
-    } else if (line.startsWith("I")) {
-      Ki = line.substring(1).toFloat();
-      Serial.print("[CMD] Ki set to: ");
-      Serial.println(Ki);
-    } else if (line.startsWith("D")) {
-      Kd = line.substring(1).toFloat();
-      Serial.print("[CMD] Kd set to: ");
-      Serial.println(Kd);
+    if (Serial.available() > 0) {
+      String line = Serial.readStringUntil('\n');
+      line.trim();
 
-    } else {
-      int input = line.toInt();
-      targetRPM = 0; // Disable PID control
-      
-      setFanSpeed_1(constrain(input, 0, 255));
+      // R#group#rpm (e.g. R1#900 or R2#1200)
+      if (line.startsWith("R") && line.indexOf('#') > 0) {
+        int group = line.substring(1, line.indexOf('#')).toInt();
+        int rpm = line.substring(line.indexOf('#') + 1).toInt();
+        int groupId = (group == 1) ? SIDE : BACK;
+        float* targetRPM = (groupId == SIDE) ? &targetRPM_SIDE : &targetRPM_BACK;
+        *targetRPM = constrain(rpm, 0, 3000);
+        integral = 0; lastError = 0;
+        int initialDuty = 0;
+        for (int i = 0; i < sizeof(rpmPoints)/sizeof(rpmPoints[0]) - 1; i++) {
+          if (*targetRPM >= rpmPoints[i] && *targetRPM <= rpmPoints[i+1]) {
+            float ratio = (float)(*targetRPM - rpmPoints[i]) / (rpmPoints[i+1] - rpmPoints[i]);
+            initialDuty = pwmPoints[i] + ratio * (pwmPoints[i+1] - pwmPoints[i]);
+            break;
+          }
+        }
+        currentDutyCycle = initialDuty;
+        setFanSpeed(initialDuty, groupId);
+        Serial.print("[CMD] Group ");
+        Serial.print(group);
+        Serial.print(" Target RPM set to: ");
+        Serial.println(*targetRPM);
+      } else if (line.startsWith("P")) {
+        Kp = line.substring(1).toFloat();
+        Serial.print("[CMD] Kp set to: ");
+        Serial.println(Kp);
+      } else if (line.startsWith("I")) {
+        Ki = line.substring(1).toFloat();
+        Serial.print("[CMD] Ki set to: ");
+        Serial.println(Ki);
+      } else if (line.startsWith("D")) {
+        Kd = line.substring(1).toFloat();
+        Serial.print("[CMD] Kd set to: ");
+        Serial.println(Kd);
+      } else {
+        int input = line.toInt();
+        targetRPM_BACK = 0; // Disable PID control
+        setFanSpeed(constrain(input, 0, 255), SIDE);
+        setFanSpeed(constrain(input, 0, 255), BACK);
+      }
     }
-  }
   
   delay(50);
 }
