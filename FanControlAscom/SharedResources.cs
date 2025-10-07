@@ -111,11 +111,10 @@ namespace ASCOM.LocalServer
         /// </remarks>
         public static string SendMessage(string message)
         {
-            // TODO update this with your requirements
             lock (lockObject)
             {
                 SharedSerial.Transmit(message);
-                return SharedSerial.ReceiveTerminated("\n");
+                return "OK";
             }
         }
 

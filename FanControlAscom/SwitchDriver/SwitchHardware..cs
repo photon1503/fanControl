@@ -97,6 +97,9 @@ namespace ASCOM.FanControl.Switch
         internal static double backTargetPWM = 0;
         internal static double sideTargetPWM = 0;
 
+        private static System.Threading.Thread dataReceiveThread;
+        private static bool dataReceiveThreadRunning = false;
+
         /// <summary>
         /// Initializes a new instance of the device Hardware class.
         /// </summary>
@@ -452,11 +455,18 @@ namespace ASCOM.FanControl.Switch
                         SharedResources.SharedSerial.Connected = true; // Connect to the COM port
                                                                        //   connectedState = true;
 
-                        // start a timer to read serial using DataReceived function every second
-                        double interval = 500; // milliseconds
-                        System.Timers.Timer timer = new System.Timers.Timer(interval);
-                        timer.Elapsed += new System.Timers.ElapsedEventHandler(DataReceived);
-                        timer.Start();
+                        // TODO: create and start DataReceive thread in the background
+                        if (dataReceiveThread == null || !dataReceiveThreadRunning)
+                        {
+                            dataReceiveThreadRunning = true;
+                            dataReceiveThread = new System.Threading.Thread(() =>
+                            {
+                                DataReceived();
+                            });
+                            dataReceiveThread.IsBackground = true;
+                            dataReceiveThread.Start();
+                            LogMessage("SetConnected", "DataReceive thread started.");
+                        }
 
                         //
                         LogMessage("SetConnected", $"Connecting to hardware.");
@@ -482,6 +492,14 @@ namespace ASCOM.FanControl.Switch
                 }
                 else // Instance currently connected so disconnect it
                 {
+                    // stop DataReceive thread
+                    if (dataReceiveThread != null && dataReceiveThreadRunning)
+                    {
+                        dataReceiveThreadRunning = false;
+                        dataReceiveThread.Join(2000);
+                        dataReceiveThread = null;
+                        LogMessage("SetConnected", "DataReceive thread stopped.");
+                    }
                     // Remove the driver unique ID to the connected list
                     uniqueIds.Remove(uniqueId);
                     LogMessage("SetConnected", $"Unique id {uniqueId} removed from the connection list.");
@@ -622,9 +640,9 @@ namespace ASCOM.FanControl.Switch
                 case 9: return "Outside Hum";
                 case 10: return "Outside Press";
                 case 11: return "Target RPM Side";
-                case 12: return "Target RPM Back";
+                case 12: return "Target RPM Rear";
                 case 13: return "Target PWM Side";
-                case 14: return "Target PWM Back";
+                case 14: return "Target PWM Rear";
 
                 default:
                     LogMessage("GetSwitchName", $"GetSwitchName({id}) - Invalid switch ID");
@@ -662,10 +680,10 @@ namespace ASCOM.FanControl.Switch
                 case 2: return "Rear fan PWM value (0-255)";
                 case 3: return "Rear fan RPM ";
                 case 4: return "Rear fan auto mode (true/false)";
-                case 5: return "Mirror temperature (C)";
+                case 5: return "Mirror temperature (°C)";
                 case 6: return "Mirror humidity (%)";
                 case 7: return "Mirror pressure (hPa)";
-                case 8: return "Outside temperature (C)";
+                case 8: return "Outside temperature (°C)";
                 case 9: return "Outside humidity (%)";
                 case 10: return "Outside pressure (hPa)";
                 case 11: return "Set Side fan target RPM (0 for off)";
@@ -723,7 +741,7 @@ namespace ASCOM.FanControl.Switch
                     LogMessage("CanWrite", $"CanWrite({id}) - Invalid switch ID");
                     throw new ASCOM.InvalidValueException($"CanWrite({id}) - Invalid switch ID");
             }
-            return true;
+            return writable;
         }
 
         #region Boolean switch members
@@ -828,9 +846,9 @@ namespace ASCOM.FanControl.Switch
             switch (id)
             {
                 case 0: return 1; // Side PWM
-                case 1: return 1; // Side RPM Target
+                case 1: return 0.1; // Side RPM Target
                 case 2: return 1; // Back PWM
-                case 3: return 1; // Back RPM Target
+                case 3: return 0.1; // Back RPM Target
                 case 4: return 1; // Back Auto
                 case 5: return 0.01; // Mirror Temp
                 case 6: return 0.01; // Mirror Hum
@@ -907,7 +925,7 @@ namespace ASCOM.FanControl.Switch
                     break;
 
                 case 13: // Set PWM Side
-                    SharedResources.SharedSerial.Transmit("S1#{value}\n");
+                    SharedResources.SharedSerial.Transmit($"S1#{value}\n");
                     LogMessage("SetSwitchValue", $"SetSwitchValue({id}) = {value}");
                     sideTargetPWM = (int)value;
                     break;
@@ -1148,84 +1166,78 @@ namespace ASCOM.FanControl.Switch
         }
 
         // read incoming messages from serial port
-        private static void DataReceived(object source, System.Timers.ElapsedEventArgs e)
+        private static void DataReceived()
         {
-            try
+            while (true)
             {
-                string msg = SharedResources.SharedSerial.ReceiveTerminated("\n");
-
-                if (string.IsNullOrEmpty(msg))
+                try
                 {
-                    return;
-                }
+                    string msg = SharedResources.SharedSerial.ReceiveTerminated("\n");
 
-                tl.LogMessage("DataReceived", $"Received message: {msg}");
-                /*
-  *
- (temp,hum,press,temp,hum,press,dutycycle)
-SIDE,968.7,130,1000.0,31.3,0.030,0.010,0.005,16.48
-
- (rpm,duty,targetrpm,delta,kp,ki,kd,airflow)
-BACK,0.0,0,0.0,-0.0,0.030,0.010,0.005,0.00
-TEMP,OFF,23.30,40.29,1005.56,23.02,40.50,1006.61,N/A
-
- */
-                // split message
-                string[] parts = msg.Split(',');
-                if (parts.Length > 1)
-                {
-                    switch (parts[0])
+                    if (string.IsNullOrEmpty(msg))
                     {
-                        case "SIDE":
-                            if (parts.Length >= 3)
-                            {
-                                double.TryParse(parts[1], out double tsideRpm);
-                                double.TryParse(parts[2], out double tsideDuty);
-                                long.TryParse(parts[3], out long tsideTarget);
+                        return;
+                    }
 
-                                CurrentSideRPM = tsideRpm;
-                                CurrentSidePWM = tsideDuty;
-                                // sideTargetRPM = tsideTarget;
-                            }
-                            break;
+                    tl.LogMessage("DataReceived", $"Received message: {msg}");
 
-                        case "BACK":
-                            if (parts.Length >= 3)
-                            {
-                                double.TryParse(parts[1], out double tbackRpm);
-                                double.TryParse(parts[2], out double tbackDuty);
-                                long.TryParse(parts[3], out long tbackTarget);
+                    // split message
+                    string[] parts = msg.Split(',');
+                    if (parts.Length > 1)
+                    {
+                        switch (parts[0])
+                        {
+                            case "SIDE":
+                                if (parts.Length >= 3)
+                                {
+                                    double.TryParse(parts[1], out double tsideRpm);
+                                    double.TryParse(parts[2], out double tsideDuty);
+                                    long.TryParse(parts[3], out long tsideTarget);
 
-                                CurrentBackRPM = tbackRpm;
-                                CurrenBackPWM = tbackDuty;
-                                //  backTargetRPM = tbackTarget;
-                            }
-                            break;
+                                    CurrentSideRPM = tsideRpm;
+                                    CurrentSidePWM = tsideDuty;
+                                    // sideTargetRPM = tsideTarget;
+                                }
+                                break;
 
-                        case "TEMP":
-                            if (parts.Length >= 7)
-                            {
-                                double.TryParse(parts[2], out double tmirrorTemp);
-                                double.TryParse(parts[3], out double tmirrorHum);
-                                double.TryParse(parts[4], out double tmirrorPress);
-                                double.TryParse(parts[5], out double toutsideTemp);
-                                double.TryParse(parts[6], out double toutsideHum);
-                                double.TryParse(parts[7], out double toutsidePress);
+                            case "BACK":
+                                if (parts.Length >= 3)
+                                {
+                                    double.TryParse(parts[1], out double tbackRpm);
+                                    double.TryParse(parts[2], out double tbackDuty);
+                                    long.TryParse(parts[3], out long tbackTarget);
 
-                                mirrorHum = tmirrorHum;
-                                mirrorTemp = tmirrorTemp;
-                                mirrorPress = tmirrorPress;
-                                outsideTemp = toutsideTemp;
-                                outsideHum = toutsideHum;
-                                outsidePress = toutsidePress;
-                            }
-                            break;
+                                    CurrentBackRPM = tbackRpm;
+                                    CurrenBackPWM = tbackDuty;
+                                    //  backTargetRPM = tbackTarget;
+                                }
+                                break;
+
+                            case "TEMP":
+                                if (parts.Length >= 7)
+                                {
+                                    double.TryParse(parts[2], out double tmirrorTemp);
+                                    double.TryParse(parts[3], out double tmirrorHum);
+                                    double.TryParse(parts[4], out double tmirrorPress);
+                                    double.TryParse(parts[5], out double toutsideTemp);
+                                    double.TryParse(parts[6], out double toutsideHum);
+                                    double.TryParse(parts[7], out double toutsidePress);
+
+                                    mirrorHum = tmirrorHum;
+                                    mirrorTemp = tmirrorTemp;
+                                    mirrorPress = tmirrorPress;
+                                    outsideTemp = toutsideTemp;
+                                    outsideHum = toutsideHum;
+                                    outsidePress = toutsidePress;
+                                }
+                                break;
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                LogMessage("DataReceived", $"Exception reading serial data: {ex.Message}\r\n{ex}");
+                catch (Exception ex)
+                {
+                    LogMessage("DataReceived", $"Exception reading serial data: {ex.Message}\r\n{ex}");
+                }
             }
         }
 
