@@ -1,5 +1,5 @@
 
-# Telescope Fan Controller
+# Telescope Fan Controller (Work in progress!)
 
 ![Fan Controller](image.png)
 
@@ -67,7 +67,7 @@ This project provides a hardware and software solution for controlling telescope
 
 ## Images
 
-![Fan Controller](image.png)
+
 ![Fan Controller Rear](image-1.png)
 ![Fan Controller Side](image-2.png)
 
